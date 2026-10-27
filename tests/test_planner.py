@@ -36,3 +36,31 @@ def test_klik_met_geldige_sessie_opent_geen_venster(monkeypatch):
     assert vangst.aanvraag_stand(uit["id"], uit["token"])["fase"] == "klaar"
     assert vangst.aanvraag_stand(uit["id"], "verkeerd") is None
     assert not vangst.vnc_draait() and vangst.venster_stand() is None
+
+
+def test_verbindfout_geeft_soort_en_host(monkeypatch):
+    """B2 (27-10): 'URLError' zei niets; de stand toont nu soort + host, zonder tekst uit de fout."""
+    import socket
+    import urllib.error
+    from meeleespod import outlook, vangnet
+    staat.schrijf("sleutels", {"meelees": "nep-sleutel-1234567890"})
+    staat.schrijf("stand", {"outlook": {"ingelogd_sinds": "2026-10-01T00:00:00+00:00", "modus": "live"}})
+
+    def stuk(req, timeout=None):
+        raise urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+    monkeypatch.setattr(vangnet._opener, "open", stuk)
+    monkeypatch.setattr(outlook, "lees_sessie", lambda: {"token": "nep"})
+    monkeypatch.setattr(outlook, "vernieuw_nodig", lambda: False)
+    planner.draai("outlook")
+    assert planner.stand()["outlook"]["laatste_ronde"]["code"] == "VERBIND_DNS_OUTLOOK"
+
+
+def test_soort_verbindfout():
+    import ssl
+    import urllib.error
+    from meeleespod import vangnet
+    assert vangnet.soort_verbindfout(urllib.error.URLError(ssl.SSLCertVerificationError("x"))) == "CERT"
+    assert vangnet.soort_verbindfout(urllib.error.URLError(ConnectionRefusedError(111, "x"))) == "GEWEIGERD"
+    assert vangnet.soort_verbindfout(TimeoutError()) == "TIMEOUT"
+    assert vangnet.soort_verbindfout(urllib.error.URLError(OSError(101, "x"))) == "GEEN_ROUTE"
+    assert vangnet.soort_verbindfout(urllib.error.URLError("x")) == "OVERIG"

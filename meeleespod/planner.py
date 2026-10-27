@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from . import instellingen as I
-from . import staat, vangst, webhook
+from . import staat, vangnet, vangst, webhook
 from .logboek import log
 
 STANDAARD_MODUS = {"outlook": "proef", "teams": "proef", "parro": "live"}
@@ -140,8 +140,9 @@ def draai(dienst, handmatig=False):
                 return {"status": "vernieuw_fout"}
         uit = lezer.ronde(modus) if dienst != "parro" else lezer.ronde()
     except Exception as e:
-        uit = {"status": "fout", "code": type(e).__name__}
-        log("ronde_fout", dienst=dienst, code=type(e).__name__)
+        code = e.kort if isinstance(e, vangnet.VerbindFout) else type(e).__name__
+        uit = {"status": "fout", "code": code}
+        log("ronde_fout", dienst=dienst, code=code)
     finally:
         _bezig["dienst"] = None
     uit["duur_s"] = round(time.time() - t0, 1)

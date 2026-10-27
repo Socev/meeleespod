@@ -8,7 +8,9 @@
 Eerlijk (ontwerp § 4): dit beperkt alleen de eigen Python-code. Chromium (nodig om in te loggen) en de Node-vanger
 vallen erbuiten; een echte grens kan alleen op netwerkniveau (zie LEESMIJ, egress).
 """
+import errno
 import json
+import socket
 import ssl
 import threading
 import time
@@ -38,6 +40,38 @@ class HttpFout(Exception):
         super().__init__(f"HTTP {status}")
         self.status = status
         self.host = host
+
+
+class VerbindFout(Exception):
+    """Geen verbinding (geen HTTP-antwoord). `kort` = SOORT_HOST voor stand en log, zonder tekst uit de fout zelf."""
+    def __init__(self, soort, host=""):
+        self.soort = soort
+        self.host = host
+        label = (host or "").split(".")[0].upper()[:12] or "ONBEKEND"
+        self.kort = f"VERBIND_{soort}_{label}"[:32]
+        super().__init__(self.kort)
+
+
+def soort_verbindfout(e):
+    """Vertaalt de reden van een URLError/OSError naar een vaste code (B2: URLError zonder meer zei niets)."""
+    r = getattr(e, "reason", e)
+    if isinstance(r, socket.gaierror):
+        return "DNS"
+    if isinstance(r, ssl.SSLCertVerificationError):
+        return "CERT"
+    if isinstance(r, ssl.SSLError):
+        return "TLS"
+    if isinstance(r, ConnectionRefusedError):
+        return "GEWEIGERD"
+    if isinstance(r, ConnectionResetError):
+        return "RESET"
+    if isinstance(r, (TimeoutError, socket.timeout)):
+        return "TIMEOUT"
+    if isinstance(r, OSError) and r.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EAFNOSUPPORT):
+        return "GEEN_ROUTE"
+    if isinstance(r, OSError) and r.errno:
+        return f"OS{r.errno}"
+    return "OVERIG"
 
 
 def weigeringen():
@@ -121,6 +155,10 @@ def verzoek(methode, url, koppen=None, data=None, timeout=60, dienst=None, max_b
         except Exception:
             pass
         raise HttpFout(e.code, host) from None
+    except (urllib.error.URLError, OSError) as e:
+        fout = VerbindFout(soort_verbindfout(e), host)
+        log("verbind_fout", host=host or "-", code=fout.soort, dienst=dienst or "-")
+        raise fout from None
 
 
 def get_json(url, koppen=None, timeout=60, dienst=None):

@@ -15,8 +15,10 @@ metadata:
     - Utilities_v112
 
 # Twee ingangen op dezelfde pod (ontwerp § 6):
-# - meeleespod (8080): de inlogpagina met het inlogvenster. authLevel private = altijd achter de Olares-login met 2FA,
-#   ook binnen het netwerk. Daarin kan een Outlook-/Teams-venster als David openen: daarom nooit internal.
+# - meeleespod (8080): de inlogpagina met het inlogvenster. authLevel private = achter de Olares-login met 2FA van buiten.
+#   Gemeten 27-10 (B2, wv1716): vanuit een pod op Olares zelf (claudebot) komt deze ingang er via het olares.com-adres
+#   ZONDER login bij, en de knopkop + Origin zijn na te maken. Daarom eerst stil vernieuwen (LEESMIJ § Inloggen).
+#   Daarin kan een Outlook-/Teams-venster als David openen: daarom nooit internal.
 # - meeleesapi (8081): alleen de smalle API voor Socev (stand, ronde, koppel, modus) met Socevs sleutel. authLevel
 #   internal (zoals de health-pod): de claudebot-pod komt er zonder Olares-login bij; van buiten is de login nodig.
 #   Deze poort kent geen inlogknop en geen VNC.
