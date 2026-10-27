@@ -42,8 +42,8 @@ spec:
             limits: {cpu: "100m", memory: 64Mi}
       containers:
         - name: meeleespod
-          # CI-run 6 (commit 8a30c60), rooktest groen; vast op digest
-          image: ghcr.io/socev/meeleespod:stabiel-6@sha256:f00c49a0a2168558bf4383860e851977791b1bfc025c8bf8391ebd737213602f
+          # CI-run 7 (commit 75a579b), rooktest groen; vast op digest
+          image: ghcr.io/socev/meeleespod:stabiel-7@sha256:cc600fd92fe31b92ee93521198a39e0aedeb0beab40d9325e78a2541e161085e
           imagePullPolicy: IfNotPresent
           args: ["pod"]
           env:
