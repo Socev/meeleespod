@@ -30,6 +30,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends xvfb x11vnc xauth poppler-utils \
  && rm -rf /var/lib/apt/lists/*
+# Python-Playwright (het basisimage levert alleen de browsers, niet de module): vast op hash, dan pip weer weg.
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages --require-hashes --only-binary=:all: -r /tmp/requirements.txt \
+ && rm /tmp/requirements.txt
 # Alleen het node-programma (geen npm/npx in het eindimage).
 COPY --from=bouw /opt/node/bin/node /usr/local/bin/node
 COPY --from=bouw /bouw/vanger/dist /app/vanger/dist
