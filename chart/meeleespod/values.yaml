@@ -1,0 +1,9 @@
+# Olares vult bij installatie o.a. .Values.userspace.appData en appCache in. Deze standaardwaarden zijn alleen voor
+# helm template/lint buiten Olares. Sleutels staan NIET hier maar in de template: Olares upgradet met de waarden van de
+# installatie, nieuwe waarden in values.yaml komen dan niet aan (gemeten bij de health-pod, 4-10-2026).
+userspace:
+  appData: /tmp/appdata
+  appCache: /tmp/appcache
+workloads:
+  meeleespod:
+    replicaCount: 1

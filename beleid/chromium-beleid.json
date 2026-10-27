@@ -1,0 +1,19 @@
+{
+  "DeveloperToolsAvailability": 2,
+  "DownloadRestrictions": 3,
+  "URLBlocklist": ["chrome://*", "file://*", "view-source:*", "devtools://*", "chrome-extension://*", "javascript://*"],
+  "PasswordManagerEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "IncognitoModeAvailability": 1,
+  "BrowserGuestModeEnabled": false,
+  "BrowserAddPersonEnabled": false,
+  "PrintingEnabled": false,
+  "ExtensionInstallBlocklist": ["*"],
+  "AllowFileSelectionDialogs": false,
+  "PromptForDownloadLocation": false,
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false
+}

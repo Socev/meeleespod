@@ -1,0 +1,18 @@
+{
+  "name": "meeleespod-vanger",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Alleen de inlogvangst van outlook-access en teams-access (vaste commits, zie vendor/BRON.md)",
+  "license": "MIT",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "playwright": "1.64.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3"
+  }
+}

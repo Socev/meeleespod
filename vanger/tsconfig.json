@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": false,
+    "outDir": "dist",
+    "rootDir": "..",
+    "types": [
+      "node"
+    ],
+    "typeRoots": [
+      "./node_modules/@types"
+    ],
+    "paths": {
+      "playwright": [
+        "./node_modules/playwright"
+      ]
+    }
+  },
+  "files": [
+    "src/vanger.ts",
+    "../vendor/outlook-access/src/auth/browser-capture.ts",
+    "../vendor/teams-access/src/auth/browser-capture.ts"
+  ]
+}

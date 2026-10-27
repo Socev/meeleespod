@@ -1,0 +1,10 @@
+.git
+.github
+tests
+chart
+ci
+socev
+**/__pycache__
+vanger/node_modules
+vanger/dist
+*.tgz

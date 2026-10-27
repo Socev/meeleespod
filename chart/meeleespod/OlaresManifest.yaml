@@ -1,0 +1,66 @@
+olaresManifest.version: '0.12.0'
+olaresManifest.type: app
+apiVersion: 'v3'
+
+workloadReplicas:
+  meeleespod: 1
+
+metadata:
+  name: meeleespod
+  title: Meeleespod
+  description: Outlook en Teams van de praktijk en Parro alleen lezen, zonder de werk-pc
+  icon: https://app.cdn.olares.com/appstore/default/defaulticon.webp
+  version: 0.0.1
+  categories:
+    - Utilities_v112
+
+# Twee ingangen op dezelfde pod (ontwerp § 6):
+# - meeleespod (8080): de inlogpagina met het inlogvenster. authLevel private = altijd achter de Olares-login met 2FA,
+#   ook binnen het netwerk. Daarin kan een Outlook-/Teams-venster als David openen: daarom nooit internal.
+# - meeleesapi (8081): alleen de smalle API voor Socev (stand, ronde, koppel, modus) met Socevs sleutel. authLevel
+#   internal (zoals de health-pod): de claudebot-pod komt er zonder Olares-login bij; van buiten is de login nodig.
+#   Deze poort kent geen inlogknop en geen VNC.
+# Bewust GEEN runAsInternal: dan zou deze namespace bij andere apps van David naar binnen mogen.
+entrances:
+  - name: meeleespod
+    port: 8080
+    host: meeleespod
+    title: Meeleespod
+    authLevel: private
+    openMethod: default
+    icon: https://app.cdn.olares.com/appstore/default/defaulticon.webp
+  - name: meeleesapi
+    port: 8081
+    host: meeleesapi
+    title: Meeleespod API
+    authLevel: internal
+    invisible: true
+    openMethod: default
+    icon: https://app.cdn.olares.com/appstore/default/defaulticon.webp
+
+permission:
+  appData: true     # /staat: waterlijnen, gezien-lijsten, oordelen (alleen klasse), webhooksleutels
+  appCache: true    # /geheim: sessies en browserprofielen; bewust NIET op app-data (niet mee in de back-up naar de NAS)
+  appCommon: false
+  externalData: false
+
+spec:
+  versionName: '0.1.0'
+  runAsUser: true
+  developer: Socev
+  locale:
+    - nl-NL
+    - en-US
+  requiredCpu: "300m"
+  requiredMemory: 640Mi
+  limitedCpu: "2100m"
+  limitedMemory: 3136Mi
+  requiredDisk: 2Gi
+  supportArch:
+    - amd64
+
+options:
+  dependencies:
+    - name: olares
+      type: system
+      version: '>=1.12.6-0'

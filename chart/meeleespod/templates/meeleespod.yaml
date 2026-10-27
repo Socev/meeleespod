@@ -1,0 +1,123 @@
+# meeleespod: één pod met planner, inlogpagina (8080) en API (8081). Zie OlaresManifest.yaml voor de twee ingangen.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meeleespod
+  namespace: "{{ .Release.Namespace }}"
+  labels:
+    io.kompose.service: meeleespod
+spec:
+  replicas: {{ .Values.workloads.meeleespod.replicaCount }}
+  selector:
+    matchLabels:
+      io.kompose.service: meeleespod
+  strategy:
+    type: Recreate          # één browserprofiel, één schrijver: nooit twee tegelijk
+  template:
+    metadata:
+      annotations:
+        meeleespod/chartversie: {{ .Chart.Version | quote }}   # elke upgrade = nieuwe pod
+      labels:
+        io.kompose.service: meeleespod
+    spec:
+      automountServiceAccountToken: false   # de pod heeft niets te zoeken bij de Kubernetes-API
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 20
+      initContainers:
+        # hostPath maakt de mappen als root aan; de dienst draait als uid 1000 (zelfde patroon als de health-pod).
+        - name: init-permissions
+          image: beclab/aboveos-busybox:1.37.0
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              for d in /staat /geheim; do mkdir -p "$d" && chown 1000:1000 "$d" && chmod 700 "$d"; done
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - {mountPath: /staat, name: staat}
+            - {mountPath: /geheim, name: geheim}
+          resources:
+            limits: {cpu: "100m", memory: 64Mi}
+      containers:
+        - name: meeleespod
+          image: ghcr.io/socev/meeleespod:stabiel-1
+          imagePullPolicy: IfNotPresent
+          args: ["pod"]
+          env:
+            - {name: TZ, value: Europe/Amsterdam}
+            # Socevs sleutel: alleen de sha256 (de sleutel zelf staat in de claudebot-pod, /opt/data/.meeleespod/, 0600).
+            - {name: MEELEES_SOCEV_HASHES, value: "17041fdbdcfc58906f1bfd66472ec1d8af92f3702696bfcbe165f754227d9c84"}
+            - {name: MEELEES_OUTLOOK, value: "aan"}
+            - {name: MEELEES_TEAMS, value: "aan"}
+            - {name: MEELEES_PARRO, value: "aan"}
+            - {name: MEELEES_BIJLAGEN, value: "uit"}   # aan pas na B3 (n8n-tak /outlook-bijlage)
+          ports:
+            - {containerPort: 8080}
+            - {containerPort: 8081}
+          readinessProbe:
+            httpGet: {path: /gezond, port: 8081}
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: {path: /gezond, port: 8081}
+            periodSeconds: 60
+            failureThreshold: 5
+          resources:
+            requests: {cpu: "200m", memory: 576Mi}
+            limits: {cpu: "2", memory: 3Gi}
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {mountPath: /staat, name: staat}
+            - {mountPath: /geheim, name: geheim}
+            - {mountPath: /tmp, name: tmp}
+            - {mountPath: /werk, name: werk}
+            - {mountPath: /dev/shm, name: dshm}
+      restartPolicy: Always
+      volumes:
+        - name: staat
+          hostPath:
+            path: "{{ .Values.userspace.appData }}/meeleespod/"
+            type: DirectoryOrCreate
+        - name: geheim
+          hostPath:
+            path: "{{ .Values.userspace.appCache }}/meeleespod/"
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {sizeLimit: 1Gi}
+        - name: werk                  # bijlagen heel even (pdftotext); in het geheugen, weg bij elke herstart
+          emptyDir: {medium: Memory, sizeLimit: 128Mi}
+        - name: dshm                  # Chromium heeft meer dan de standaard 64 MB gedeeld geheugen nodig
+          emptyDir: {medium: Memory, sizeLimit: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meeleespod
+  namespace: "{{ .Release.Namespace }}"
+  labels:
+    io.kompose.service: meeleespod
+spec:
+  ports:
+    - {name: pagina, port: 8080, targetPort: 8080}
+  selector:
+    io.kompose.service: meeleespod
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meeleesapi
+  namespace: "{{ .Release.Namespace }}"
+  labels:
+    io.kompose.service: meeleespod
+spec:
+  ports:
+    - {name: api, port: 8081, targetPort: 8081}
+  selector:
+    io.kompose.service: meeleespod

@@ -1,0 +1,15 @@
+body{font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;color:#14213d;background:#f6f8fb}
+main{max-width:720px;margin:0 auto;padding:24px}
+h1{font-size:24px;margin:0 0 8px}
+.uitleg{color:#333}.klein{font-size:13px;color:#555}
+.dienst{background:#fff;border:1px solid #dde3ec;border-radius:10px;padding:14px 16px;margin:12px 0}
+.dienst h2{font-size:18px;margin:0 0 6px}
+.regel{font-size:14px;color:#333}
+.goed{color:#0a7a3d}.slecht{color:#b42318}.grijs{color:#666}
+button{font:inherit;background:#1d4ed8;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;margin-top:8px}
+button[disabled]{background:#9aa6b8;cursor:default}
+body.venster{background:#222}
+.balk{background:#14213d;color:#fff;padding:8px 12px;font-size:14px}
+.balk a{color:#cfe0ff;margin-left:12px}
+.balk button{margin:0 0 0 12px;padding:4px 10px}
+#scherm{width:100vw;height:calc(100vh - 44px)}
