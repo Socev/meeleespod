@@ -107,3 +107,12 @@ def test_knop_alleen_van_deze_pagina(poorten):
 def test_novnc_geen_pad_buiten_de_map(poorten):
     _, pw = poorten
     assert vraag(pw, "GET", "/novnc/../../etc/passwd")[0] == 404
+
+
+def test_hoofdpagina_heeft_venster_sluiten(poorten):
+    """Een vastgelopen inlogvenster mag de pagina niet blokkeren: hoofdpagina biedt 'Venster sluiten' en roept /inloggen/stop aan."""
+    _, pw = poorten
+    st, pagina = vraag(pw, "GET", "/")
+    assert st == 200 and b"open-venster-sluit" in pagina and "Venster sluiten".encode() in pagina
+    st, js = vraag(pw, "GET", "/pagina.js")
+    assert st == 200 and b"/inloggen/stop" in js and b"toonOpenVenster" in js

@@ -140,7 +140,7 @@ def draai(dienst, handmatig=False):
                 return {"status": "vernieuw_fout"}
         uit = lezer.ronde(modus) if dienst != "parro" else lezer.ronde()
     except Exception as e:
-        code = e.kort if isinstance(e, vangnet.VerbindFout) else type(e).__name__
+        code = e.kort if isinstance(e, (vangnet.VerbindFout, vangnet.HttpFout)) else type(e).__name__
         uit = {"status": "fout", "code": code}
         log("ronde_fout", dienst=dienst, code=code)
     finally:

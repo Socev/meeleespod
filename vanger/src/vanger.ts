@@ -74,7 +74,7 @@ function hostToegestaan(url: string): boolean {
   }
 }
 
-function zetBeleid(modus: Modus): void {
+function zetBeleid(modus: Modus, dienst: Dienst): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pw = require('playwright');
   const origineel = pw.chromium.launchPersistentContext.bind(pw.chromium);
@@ -82,6 +82,14 @@ function zetBeleid(modus: Modus): void {
     const o: Record<string, unknown> = { ...opties };
     delete o.channel; // altijd de Chromium uit het image, nooit een Chrome-kanaal
     o.headless = false; // altijd op het virtuele scherm (Teams vernieuwt headless niet op een tenant met voorwaardelijke toegang)
+    // Teams: forceer Engels (Accept-Language). Op een Defender-for-Cloud-Apps-tenant leidt de eerste Teams-navigatie
+    // via de MCAS-proxy om naar een "omleidingsmelding" (mcas-proxyweb.mcas.ms/certificate-checker). Het pakket klikt die
+    // melding weg met de tekst "Proceed to ..." (teams-access browser-capture.ts clearMcasInterstitial). De proxy rendert
+    // die pagina in de taal uit Accept-Language: met nl-NL staat er "Doorgaan naar ..." en matcht de selector NIET, dus
+    // bleef het inlogvenster op de melding hangen tot de time-out (gemeten 27-10-2026, B2 wv1716). Met en-US staat er
+    // "Proceed to ..." en ruimt het pakket de melding zelf op. Gemeten 27-10 vanuit de claudebot-pod: zelfde IP, nl→NL,
+    // en→EN, dus de taal volgt Accept-Language. Outlook logde in nl-NL al goed in; die laten we ongemoeid.
+    if (dienst === 'teams') o.locale = 'en-US';
     o.acceptDownloads = false;
     o.viewport = null;
     const args = Array.isArray(o.args) ? [...(o.args as string[])] : [];
@@ -218,7 +226,7 @@ async function hoofd(): Promise<void> {
   }
   const profiel = process.env.MEELEES_PROFIEL || '';
   if (!profiel) klaar({ ok: false, dienst, code: 'GEEN_PROFIEL' }, UIT_FOUT);
-  zetBeleid(modus);
+  zetBeleid(modus, dienst);
   try {
     if (dienst === 'outlook') await vangOutlook(modus, uitMap, profiel);
     else await vangTeams(modus, uitMap, profiel);

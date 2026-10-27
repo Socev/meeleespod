@@ -40,6 +40,8 @@ class HttpFout(Exception):
         super().__init__(f"HTTP {status}")
         self.status = status
         self.host = host
+        label = (host or "").split(".")[0].upper()[:12] or "ONBEKEND"
+        self.kort = f"HTTP{status}_{label}"[:32]   # voor stand/log: host + status, geen tekst uit het antwoord
 
 
 class VerbindFout(Exception):

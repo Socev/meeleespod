@@ -106,6 +106,13 @@ def draai_vanger(dienst, modus, timeout_s):
         with _venster_slot:
             if _venster.get("dienst"):
                 _venster.setdefault("procs", []).append(proc)
+                al_dicht = False
+            else:
+                al_dicht = True   # het venster is net gesloten (knop/timer) in het gaatje na Popen: deze vanger niet verweesd laten draaien
+        if al_dicht:
+            _stop(proc)
+            log("vanger_al_dicht", dienst=dienst, modus=modus)
+            return 5, {"ok": False, "code": "GESTOPT"}
     try:
         uit, fout = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:

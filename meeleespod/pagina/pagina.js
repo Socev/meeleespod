@@ -43,11 +43,31 @@ async function inloggen(dienst) {
   }
 }
 
+async function sluitVenster(knop) {
+  if (knop) knop.disabled = true;
+  try { await fetch('/inloggen/stop', { method: 'POST', headers: { 'X-Meelees-Knop': '1' } }); } catch (e) { /* ververs toont zo de stand */ }
+  ververs();
+}
+
+function toonOpenVenster(inlogvenster) {
+  const bak = document.getElementById('open-venster');
+  const tekst = document.getElementById('open-venster-tekst');
+  if (!inlogvenster) { bak.hidden = true; return; }
+  const naam = NAMEN[inlogvenster.dienst] || inlogvenster.dienst;
+  tekst.textContent = 'Er staat een inlogvenster open voor ' + naam + '. Zolang dat openstaat kun je niet opnieuw inloggen. ' +
+    'Ben je binnen, of is het venster vastgelopen? Sluit het hier.';
+  bak.hidden = false;
+  const knop = document.getElementById('open-venster-sluit');
+  knop.disabled = false;
+  knop.onclick = () => sluitVenster(knop);
+}
+
 async function ververs() {
   if (bezigMet) return;
   let s;
   try { s = await (await fetch('/stand.json', { cache: 'no-store' })).json(); } catch (e) { return; }
   if (bezigMet) return;
+  toonOpenVenster(s.inlogvenster);
   const bak = document.getElementById('diensten');
   bak.textContent = '';
   for (const d of ['outlook', 'teams', 'parro']) {
