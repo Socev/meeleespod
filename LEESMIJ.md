@@ -99,4 +99,21 @@ Adressen (gemeten 27-10): inlogpagina `https://9c3d81170.primumnonnocere.olares.
 Een upgrade (0.0.1 → 0.0.2) liet `/staat` (sleutels, stand) én `/geheim` (Outlook-sessie) staan.
 
 Verbindingsfouten (sinds 0.0.2): `laatste_ronde.code` = `VERBIND_<DNS|CERT|TLS|GEWEIGERD|RESET|TIMEOUT|GEEN_ROUTE|OS<errno>|OVERIG>_<HOST>`,
-in het log `verbind_fout host=… code=…`; geen fouttekst.
+in het log `verbind_fout host=… code=…`; geen fouttekst. Sinds 0.0.3 ook een niet-401 HTTP-fout als `HTTP<status>_<HOST>`
+(bv. `HTTP500_OUTLOOK`), zelfde vorm, geen antwoordtekst.
+
+## Teams via de MCAS-proxy (sinds 0.0.3, wv1736)
+De tenant (Huisartsen Eemland) draait Defender for Cloud Apps. De eerste Teams-navigatie loopt via de MCAS-proxy en komt
+op een "omleidingsmelding" (`mcas-proxyweb.mcas.ms/certificate-checker`). Het vendor-pakket ruimt die op door op
+"Proceed to …" te klikken — maar op `Accept-Language: nl-NL` staat er "Doorgaan naar …" en matcht de selector niet, dus
+bleef het inlogvenster hangen tot de time-out (gemeten 27-10-2026, B2). Daarom zet `vanger/src/vanger.ts` voor
+**Teams** `locale = 'en-US'` (Accept-Language); dan rendert de proxy "Proceed to …" en klikt het pakket de melding zelf
+weg. Gemeten vanuit de pod: zelfde IP, nl→NL, en→EN, dus de taal volgt Accept-Language; de Microsoft-inlogpagina is dan
+Engels voor David (eenmalig, cosmetisch). Outlook logde al goed in op nl-NL en blijft nl. Geen MCAS-CA nodig: Chromium
+in de pod vertrouwt `*.mcas.ms` al (geen cert-melding gemeten).
+
+## Vastgelopen inlogvenster (sinds 0.0.3)
+Een openstaand inlogvenster blokkeert de inlogknoppen. De **hoofdpagina** toont nu welk venster openstaat en een knop
+**Venster sluiten** (`POST /inloggen/stop`), naast de bestaande knop in het VNC-venster. `draai_vanger` stopt een net
+gestarte zichtbare vanger meteen als het venster in dat gaatje al gesloten blijkt (`code=GESTOPT`), zodat het
+browser-slot niet 10 min vast blijft (review-bevinding wv1736).
