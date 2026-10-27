@@ -196,14 +196,16 @@ def lees_chats(j_rooms, haal_berichten):
 
 
 def haal_alles(api):
-    """api(pad, range_hdr) -> json. Groepen, mededelingen per groep, schoolagenda en gesprekken. Geeft (items, groepen)."""
+    """api(pad, range_hdr) -> json. Groepen, mededelingen per groep, schoolagenda en gesprekken.
+    Geeft (items, groepen, volledig); volledig=False als een deel mislukte (dan niet zaaien, review MOET 4)."""
     groepen = lees_groepen(api("/group?dtype=identity.RHomeGroup", "items=0-99"))
-    items = []
+    items, volledig = [], True
     for g in groepen:
         try:
             j = api(f"/event?dtype=event.RAnnouncementEventPrimer&group={g['id']}", "items=0-49")
             items.extend(lees_mededelingen(j, g["naam"]))
         except Exception as e:
+            volledig = False
             log("parro_mededelingen_fout", code=type(e).__name__)
     try:
         sinds = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -211,13 +213,15 @@ def haal_alles(api):
         grens = (datetime.now() + timedelta(days=AGENDA_DAGEN_VOORUIT)).strftime("%Y-%m-%d")
         items.extend([a for a in lees_agenda(j) if a["datum"][:10] <= grens])
     except Exception as e:
+        volledig = False
         log("parro_agenda_fout", code=type(e).__name__)
     try:
         jr = api("/chatroom", "items=0-99")
         items.extend(lees_chats(jr, lambda rid: api(f"/chatroom/{rid}/chatmessage", f"items=0-{CHAT_BERICHTEN - 1}")))
     except Exception as e:
+        volledig = False
         log("parro_chats_fout", code=type(e).__name__)
-    return dedupe(items), groepen
+    return dedupe(items), groepen, volledig
 
 
 # ===== pod ===============================================================================================================
@@ -252,21 +256,24 @@ def payload_items(nieuw):
     return [{k: v for k, v in it.items() if k not in INTERN} for it in nieuw]
 
 
-def verwerk(items, groepen, st, stuur):
+def verwerk(items, groepen, st, stuur, volledig=True):
     """Kern van een ronde zonder browser (ook voor de droge toets). st = parro-staat (wordt aangepast).
-    stuur(payload) -> antwoord-dict. Geeft een uitslag-dict met alleen aantallen."""
+    stuur(payload) -> antwoord-dict. Geeft een uitslag-dict met alleen aantallen.
+    Zaaien alleen bij groepen én een volledige haal; anders wacht het (en wordt er ook nog niets verstuurd)."""
     nu = datetime.now(timezone.utc).isoformat()
     gezien = st.setdefault("gezien", {})
-    gezaaid = 0
-    if not st.get("gezaaid"):
-        gezaaid = zaai(items, gezien, I.PARRO_ZAAI_TOT, nu)
-        st["gezaaid"] = nu
-    nieuw = kies_nieuw(items, gezien)
-    uit = {"status": "ok", "gezien": len(items), "nieuw": len(nieuw), "groepen": len(groepen), "gezaaid": gezaaid,
-           "verstuurd": 0}
+    uit = {"status": "ok", "gezien": len(items), "nieuw": 0, "groepen": len(groepen), "gezaaid": 0, "verstuurd": 0}
     if not groepen:
         uit["status"] = "geen_groepen"
         return uit
+    if not st.get("gezaaid"):
+        if not volledig:
+            uit["status"] = "onvolledig_niet_gezaaid"
+            return uit
+        uit["gezaaid"] = zaai(items, gezien, I.PARRO_ZAAI_TOT, nu)
+        st["gezaaid"] = nu
+    nieuw = kies_nieuw(items, gezien)
+    uit["nieuw"] = len(nieuw)
     if nieuw:
         antwoord = stuur({"items": payload_items(nieuw), "groepen": [g["naam"] for g in groepen]})
         if not antwoord.get("ok", True):
@@ -339,6 +346,24 @@ def inloggen_zichtbaar(max_s):
     return 4, {"ok": False, "code": "LOGIN_NODIG"}
 
 
+def inloggen_stil():
+    """Na een klik op Inloggen: eerst zonder venster kijken of het profiel nog binnenkomt (ook via 'Inloggen' = SSO)."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        ctx = _open(pw, headless=True)
+        try:
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto(APP_URL)
+            headers = vang_headers(page, 45)
+            if not headers and waarom_geen_headers(page) == "geen_api":
+                headers = klik_inloggen(page)
+        finally:
+            ctx.close()
+    if headers:
+        return 0, {"ok": True, "code": "OK", "geldig_tot": token_info(headers).get("exp")}
+    return 4, {"ok": False, "code": "LOGIN_NODIG"}
+
+
 def ronde():
     """Eén Parro-ronde. Geeft een uitslag-dict (alleen aantallen en codes)."""
     from playwright.sync_api import sync_playwright
@@ -356,18 +381,29 @@ def ronde():
                 if not headers:
                     return {"status": "login_nodig"}
                 info = token_info(headers)
-                items, groepen = haal_alles(lambda pad, rng: api_get(ctx, headers, pad, rng))
+                items, groepen, volledig = haal_alles(lambda pad, rng: api_get(ctx, headers, pad, rng))
             finally:
                 ctx.close()
+                vangst.wis_berichtcache("parro")
     finally:
         vangst.browser_slot.release()
 
     st = staat.lees("parro")
-    uit = verwerk(items, groepen, st, lambda p: webhook.post("parro", p, timeout=WEBHOOK_TIMEOUT))
+    try:
+        uit = verwerk(items, groepen, st, lambda p: webhook.post("parro", p, timeout=WEBHOOK_TIMEOUT), volledig)
+        st["fouten_op_rij"] = 0
+    except Exception as e:
+        # zoals de pc: na 3 keer op rij een alarm (review)
+        st["fouten_op_rij"] = int(st.get("fouten_op_rij") or 0) + 1
+        staat.schrijf("parro", st)
+        log("parro_webhook_mislukt", code=type(e).__name__, fouten=st["fouten_op_rij"])
+        if st["fouten_op_rij"] >= 3:
+            webhook.alarm("parro", "webhook", f"Parro-webhook faalt {st['fouten_op_rij']}x op rij")
+        return {"status": "webhook_fout", "code": type(e).__name__}
     staat.schrijf("parro", st)
     uit["geldig_tot"] = info.get("exp")
     if uit["status"] == "geen_groepen":
         webhook.alarm("parro", "groepen", "geen groepen gevonden in het API-antwoord; uitlezer afstellen")
-    elif uit["verstuurd"] == 0:
+    elif uit["verstuurd"] == 0 and uit["status"] == "ok":
         webhook.levensteken("parro", {"gezien": uit["gezien"], "nieuw": 0, "groepen": uit["groepen"]})
     return uit

@@ -27,6 +27,14 @@ def _lees(naam):
         return f.read().strip()
 
 
+class _GeenOmleiding(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None   # nooit de sleutel meesturen naar een ander adres
+
+
+_opener = urllib.request.build_opener(_GeenOmleiding())
+
+
 def vraag(methode, pad, body=None):
     adres = _lees("adres").rstrip("/")
     if not adres.startswith("https://"):
@@ -36,7 +44,7 @@ def vraag(methode, pad, body=None):
         "Authorization": "Bearer " + _lees("sleutel"), "Content-Type": "application/json",
         "User-Agent": "Socev-machinekamer/1 (meelees.py)"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with _opener.open(req, timeout=60) as r:
             return r.status, json.loads(r.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         try:

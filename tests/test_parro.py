@@ -41,7 +41,8 @@ def nep_api(pad, rng):
 
 
 def test_ids_zoals_de_pc():
-    items, groepen = parro.haal_alles(nep_api)
+    items, groepen, volledig = parro.haal_alles(nep_api)
+    assert volledig
     ids = {i["id"] for i in items}
     assert groepen == [{"id": "111", "naam": "Groep 5b", "type": "HOME"}]
     assert {"mededeling:501", "mededeling:502", "chat:900:9001"} <= ids
@@ -50,7 +51,7 @@ def test_ids_zoals_de_pc():
 
 
 def test_zaaien_en_versturen():
-    items, groepen = parro.haal_alles(nep_api)
+    items, groepen, _ = parro.haal_alles(nep_api)
     st, verstuurd = {}, []
     uit = parro.verwerk(items, groepen, st, lambda p: verstuurd.append(p) or {"ok": True})
     ids = [i["id"] for i in verstuurd[0]["items"]]
@@ -68,3 +69,19 @@ def test_geen_groepen_geen_verzending():
     st = {"gezaaid": "x"}
     uit = parro.verwerk([], [], st, lambda p: (_ for _ in ()).throw(AssertionError("niet sturen")))
     assert uit["status"] == "geen_groepen"
+
+
+def test_niet_zaaien_als_de_haal_onvolledig_was():
+    def kapotte_chat(pad, rng):
+        if pad == "/chatroom":
+            raise RuntimeError("tijdelijk")
+        return nep_api(pad, rng)
+    items, groepen, volledig = parro.haal_alles(kapotte_chat)
+    assert not volledig
+    st, verstuurd = {}, []
+    uit = parro.verwerk(items, groepen, st, lambda p: verstuurd.append(p) or {"ok": True}, volledig)
+    assert uit["status"] == "onvolledig_niet_gezaaid" and not verstuurd and not st.get("gezaaid")
+    # volgende ronde volledig: dan pas zaaien, en oud blijft oud
+    items, groepen, volledig = parro.haal_alles(nep_api)
+    uit = parro.verwerk(items, groepen, st, lambda p: verstuurd.append(p) or {"ok": True}, volledig)
+    assert uit["gezaaid"] == 2 and "mededeling:502" not in [i["id"] for i in verstuurd[0]["items"]]

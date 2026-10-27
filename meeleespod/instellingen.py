@@ -18,7 +18,6 @@ WEBHOOKS = {
 # ---- uitgaand: GET alleen naar deze hosts (lezers). Chromium zelf valt hier buiten (zie LEESMIJ: egress). ----------
 GET_HOSTS = frozenset({
     "outlook.office.com",       # Outlook REST v2.0 (eigen dunne leesclient)
-    "graph.microsoft.com",      # Teams: teams en kanalen
     "teams.microsoft.com",      # Teams: chatsvc en csa (chats, berichten, kanaalposts)
     "rest-v2.parro.com",        # Parro
 })

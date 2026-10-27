@@ -2,8 +2,11 @@
 
   GET  /                    stand per dienst + knop Inloggen (geen mail, geen berichten)
   GET  /stand.json          idem als JSON voor de pagina
-  POST /inloggen?dienst=x   start het zichtbare inlogvenster; geeft een eenmalige code (alleen met de kop
-                            X-Meelees-Knop en een Origin van deze host: een andere site kan dit niet laten doen)
+  POST /inloggen?dienst=x   inlogpoging: eerst stil vernieuwen (geen venster); alleen als echt inloggen nodig is
+                            opent het venster. Geeft {id, token}; alleen met de kop X-Meelees-Knop en een Origin van
+                            deze host (een andere site in de browser kan dit niet laten doen)
+  GET  /inloggen/status?id= fase van die poging; met de kop X-Meelees-Aanvraag: <token>. Bij fase "venster" één keer
+                            de eenmalige VNC-code (alleen voor de aanvrager)
   POST /inloggen/stop       venster dicht
   GET  /vnc/?code=...       noVNC-pagina; GET /vnc/ws?code=... = websocket naar x11vnc (code eenmalig, 2 min geldig)
   GET  /novnc/...           de vaste noVNC-bestanden uit het image
@@ -48,6 +51,7 @@ class Pagina(BaseHTTPRequestHandler):
     server_version = "meeleespod"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    timeout = 30   # lees-timeout per verbinding; de websocketbrug zet dat zelf uit
 
     def log_message(self, *a):
         pass
@@ -86,6 +90,9 @@ class Pagina(BaseHTTPRequestHandler):
             return self._stuur(200, (HIER / "vnc.html").read_bytes())
         if u.path == "/vnc/ws":
             return self._ws(parse_qs(u.query).get("code", [""])[0])
+        if u.path == "/inloggen/status":
+            st = vangst.aanvraag_stand(parse_qs(u.query).get("id", [""])[0], self.headers.get("X-Meelees-Aanvraag", ""))
+            return self._json(200, st) if st else self._json(404, {"fout": "onbekende aanvraag"})
         if u.path.startswith("/novnc/"):
             return self._novnc(u.path[len("/novnc/"):])
         return self._json(404, {"fout": "onbekend"})
@@ -110,9 +117,15 @@ class Pagina(BaseHTTPRequestHandler):
         if self.headers.get("X-Meelees-Knop") != "1" or not _zelfde_herkomst(self):
             log("knop_geweigerd", http=403)
             return self._json(403, {"fout": "alleen vanaf deze pagina"})
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > 1024:
+            self.close_connection = True
+            return self._json(413, {"fout": "te groot"})
         if n:
-            self.rfile.read(min(n, 1024))
+            self.rfile.read(n)
         if u.path == "/inloggen/stop":
             vangst.sluit_inlogvenster()
             return self._json(200, {"ok": True})
@@ -120,7 +133,7 @@ class Pagina(BaseHTTPRequestHandler):
         if dienst not in I.DIENSTEN:
             return self._json(400, {"fout": "onbekende dienst"})
         uit = vangst.start_inlogvenster(dienst, planner.na_vangst)
-        return self._json(200 if "code" in uit else 409, uit)
+        return self._json(200 if "id" in uit else 409, uit)
 
     # ---- websocket ↔ x11vnc (eigen brug; geen websockify nodig) -------------------------------------------------------
     def _ws(self, code):
@@ -135,7 +148,8 @@ class Pagina(BaseHTTPRequestHandler):
         try:
             vnc = socket.create_connection(("127.0.0.1", poort), timeout=10)
         except OSError:
-            return self._json(502, {"fout": "inlogvenster niet bereikbaar"})
+            vangst.geef_vnc_code_terug(code)
+            return self._json(502, {"fout": "inlogvenster nog niet bereikbaar; probeer het zo opnieuw"})
         sleutel = self.headers["Sec-WebSocket-Key"].strip()
         accept = base64.b64encode(hashlib.sha1((sleutel + WS_GUID).encode()).digest()).decode()
         self.send_response(101)

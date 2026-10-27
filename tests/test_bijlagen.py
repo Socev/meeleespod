@@ -2,7 +2,7 @@ import io
 import zipfile
 
 from meeleespod import bijlagen
-from meeleespod.toetsdata import pdf_met_tekst, pdf_zonder_tekst
+from meeleespod.toetsdata import pdf_met_tekst, pdf_met_tekst_en_beeld, pdf_zonder_tekst
 
 
 def _docx(tekst, foto=0):
@@ -47,3 +47,16 @@ def test_docx_en_andere_formaten():
     assert bijlagen.beoordeel("a.zip", b.getvalue())["reden"] == "formaat_niet_toegestaan"
     assert bijlagen.beoordeel("a.exe", b"MZ" + b"0" * 100)["door"] is False
     assert bijlagen.beoordeel("a.msg", b"\xd0\xcf\x11\xe0" + b"0" * 100)["door"] is False
+
+
+def test_beeld_in_tekst_pdf():
+    assert bijlagen.beoordeel("brief.pdf", pdf_met_tekst_en_beeld(600, 200))["door"] is True, "briefhoofdlogo mag"
+    for b, h in ((1600, 900), (900, 1200), (400, 300), (300, 300)):
+        r = bijlagen.beoordeel("brief.pdf", pdf_met_tekst_en_beeld(b, h))
+        assert r["door"] is False and r["reden"] == "pdf_scanbeeld", (b, h)
+
+
+def test_docx_kleine_foto():
+    tekst = "Notulen werkoverleg. " * 20
+    assert bijlagen.beoordeel("n.docx", _docx(tekst, foto=60 * 1024))["reden"] == "office_foto"
+    assert bijlagen.beoordeel("n.docx", _docx(tekst, foto=10 * 1024))["door"] is True

@@ -26,8 +26,12 @@ MAX_PER_MAIL = 10
 MAX_BYTES = 20 * 1024 * 1024
 MIN_GEMIDDELD_PER_PAGINA = 200
 MIN_PER_PAGINA = 40
-SCAN_PIXELS = 1000                 # een beeld van ≥ 1000 x 1000 px in een pdf = scan of foto: weigeren
-MAX_MEDIA_BYTES = 200 * 1024       # een plaatje > 200 kB in docx/xlsx = foto: weigeren (logo's zijn kleiner)
+# Beelden (review MOET 7): elk beeld waarvan de kortste zijde ≥ 300 px is of dat ≥ 250.000 px beslaat, is een foto of
+# scan en laat de hele bijlage vallen. Een briefhoofdlogo (bv. 600 x 200) mag. Een docx/xlsx met een plaatje > 50 kB,
+# of een pdf met ingesloten bestanden, valt ook.
+BEELD_MIN_ZIJDE = 300
+BEELD_MAX_OPPERVLAK = 250_000
+MAX_MEDIA_BYTES = 50 * 1024
 MAX_TEKST = 200_000
 TOEGESTAAN = ("zakelijk", "twijfel")
 
@@ -85,14 +89,20 @@ def _pdf(b):
             return None, "pdf_onleesbaar"
         tekst = r.stdout.decode("utf-8", "replace")
         beelden = subprocess.run(["pdfimages", "-list", str(pad)], capture_output=True, timeout=60)
-        if beelden.returncode == 0:
-            for regel in beelden.stdout.decode("utf-8", "replace").splitlines()[2:]:
-                kol = regel.split()
-                if len(kol) > 4 and kol[3].isdigit() and kol[4].isdigit():
-                    if int(kol[3]) >= SCAN_PIXELS and int(kol[4]) >= SCAN_PIXELS:
-                        return None, "pdf_scanbeeld"
-        else:
+        if beelden.returncode != 0:
             return None, "pdf_beelden_onbekend"
+        for regel in beelden.stdout.decode("utf-8", "replace").splitlines()[2:]:
+            kol = regel.split()
+            if len(kol) > 4 and kol[3].isdigit() and kol[4].isdigit():
+                b, h = int(kol[3]), int(kol[4])
+                if min(b, h) >= BEELD_MIN_ZIJDE or b * h >= BEELD_MAX_OPPERVLAK:
+                    return None, "pdf_scanbeeld"
+        bijlagen_in_pdf = subprocess.run(["pdfdetach", "-list", str(pad)], capture_output=True, timeout=60)
+        if bijlagen_in_pdf.returncode != 0:
+            return None, "pdf_ingesloten_onbekend"
+        eerste = (bijlagen_in_pdf.stdout.decode("utf-8", "replace").splitlines() or ["0"])[0]
+        if not eerste.strip().startswith("0 "):
+            return None, "pdf_ingesloten_bestanden"
         return tekst, None
     finally:
         try:

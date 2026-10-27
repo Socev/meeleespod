@@ -57,11 +57,13 @@ def test_ronde_proef_en_live(monkeypatch):
     assert gestuurd[0][1]["dry_run"] is True
     assert all(not k.startswith("_") for m in gestuurd[0][1]["mails"] for k in m)
     assert staat.lees("outlook").get("gezien") == {}
-    assert staat.lees("oordelen")["abc123@voorbeeld.nl"]["klasse"] == "zakelijk"
-    assert set(staat.lees("oordelen")["abc123@voorbeeld.nl"]) == {"klasse", "tijd"}
+    assert staat.lees("oordelen") == {}, "een proefoordeel opent nooit het bijlagenpad"
     gestuurd.clear()
     uit = outlook.ronde("live")
     assert gestuurd[0][1]["dry_run"] is False
+    assert staat.lees("oordelen")["abc123@voorbeeld.nl"]["klasse"] == "zakelijk"
+    assert set(staat.lees("oordelen")["abc123@voorbeeld.nl"]) == {"klasse", "tijd"}
+    assert "geen-oordeel@x" not in staat.lees("oordelen")
     assert set(staat.lees("outlook")["gezien"]) == {"abc123@voorbeeld.nl", "geen-oordeel@x"}
     assert not any(d == "outlook-bijlage" for d, _ in gestuurd), "bijlagen staan uit tot B3"
 
@@ -91,3 +93,28 @@ def test_teams_kanalen_uit_updates():
         {"id": "19:roosters@thread.tacv2", "displayName": "Roosters", "lastMessage": {"composeTime": "2026-10-26T08:00:00Z"}}]}]}
     k = list(teams.kanalen(raw))
     assert ("19:roosters@thread.tacv2", "19:algemeen@thread.tacv2", "Roosters") == k[1][:3]
+
+
+def test_waterlijn_blijft_staan_na_mislukt_blok(monkeypatch):
+    (I.GEHEIM / "outlook").mkdir(parents=True, exist_ok=True)
+    (I.GEHEIM / "outlook" / "lezer.json").write_text(json.dumps(
+        {"token": "nep", "geldig_tot": "2099-01-01T00:00:00Z", "anchorMailbox": "PUID:x@y", "cookies": []}))
+    staat.schrijf("outlook", {"gezien": {}, "waterlijn": "2026-10-20T00:00:00+00:00"})
+    monkeypatch.setattr(outlook, "mappen", lambda s: ({}, set()))
+    mails = [bericht(Id=f"v{i}", InternetMessageId=f"<m{i}@x>", HasAttachments=False,
+                     ReceivedDateTime=f"2026-10-26T0{i}:00:00Z") for i in range(8)]
+    monkeypatch.setattr(outlook, "berichten_sinds", lambda s, sinds: mails)
+    teller = {"n": 0}
+
+    def eerste_blok_faalt(doel, payload, timeout=0, contact=True):
+        teller["n"] += 1
+        if teller["n"] == 1:
+            raise TimeoutError("verzonnen")
+        return {"ok": True, "results": []}
+    monkeypatch.setattr(webhook, "post", eerste_blok_faalt)
+    monkeypatch.setattr(webhook, "levensteken", lambda *a, **k: False)
+    uit = outlook.ronde("live")
+    st = staat.lees("outlook")
+    assert uit["status"] == "webhook_fout"
+    assert st["waterlijn"] == "2026-10-20T00:00:00+00:00", "waterlijn mag niet voorbij een mislukt blok"
+    assert set(st["gezien"]) == {f"m{i}@x" for i in range(4, 8)}

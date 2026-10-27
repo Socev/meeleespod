@@ -49,3 +49,20 @@ def pdf_zonder_tekst(px=1200):
         _stroom(beeld, f" /Type /XObject /Subtype /Image /Width {px} /Height {px} /ColorSpace /DeviceGray "
                        f"/BitsPerComponent 8 /Filter /FlateDecode".encode()),
     ])
+
+
+def pdf_met_tekst_en_beeld(b, h, tekst=TEKST):
+    """Tekstlaag plus één beeld van b x h px (logo of foto)."""
+    regels = [tekst[i:i + 80] for i in range(0, len(tekst), 80)]
+    inhoud = b"q 100 0 0 50 50 50 cm /Im1 Do Q BT /F1 11 Tf 50 780 Td 14 TL " + b" ".join(
+        b"(" + r.replace("(", "").replace(")", "").encode("latin-1") + b") '" for r in regels) + b" ET"
+    beeld = zlib.compress(bytes([90]) * (b * h))
+    return _pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R >> >> /Contents 4 0 R >>",
+        _stroom(inhoud),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        _stroom(beeld, f" /Type /XObject /Subtype /Image /Width {b} /Height {h} /ColorSpace /DeviceGray "
+                       f"/BitsPerComponent 8 /Filter /FlateDecode".encode()),
+    ])

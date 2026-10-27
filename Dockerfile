@@ -5,13 +5,13 @@ FROM mcr.microsoft.com/playwright/python:v1.64.1-noble@sha256:330d401ae23c905896
 # ---- bouwstap: Node vast op versie + sha256, de vanger (alleen inlogvangst), noVNC vast op versie + sha256 ----------
 FROM basis AS bouw
 ARG NODE_VERSIE=22.23.4
-ARG NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
+ARG NODE_SHA256=b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406
 ARG NOVNC_VERSIE=1.7.0
 ARG NOVNC_SHA256=b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6
 RUN set -eux; \
-    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSIE}/node-v${NODE_VERSIE}-linux-x64.tar.xz"; \
-    echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c -; \
-    mkdir -p /opt/node && tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1; \
+    curl -fsSL -o /tmp/node.tgz "https://nodejs.org/dist/v${NODE_VERSIE}/node-v${NODE_VERSIE}-linux-x64.tar.gz"; \
+    echo "${NODE_SHA256}  /tmp/node.tgz" | sha256sum -c -; \
+    mkdir -p /opt/node && tar -xzf /tmp/node.tgz -C /opt/node --strip-components=1; \
     curl -fsSL -o /tmp/novnc.tgz "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSIE}.tar.gz"; \
     echo "${NOVNC_SHA256}  /tmp/novnc.tgz" | sha256sum -c -; \
     mkdir -p /tmp/nv /bouw/novnc && tar -xzf /tmp/novnc.tgz -C /tmp/nv --strip-components=1; \

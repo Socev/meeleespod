@@ -168,7 +168,7 @@ def verzamel(sessie, st):
     wl = st.setdefault("wl", {})
     start_ms = int((datetime.now(timezone.utc) - timedelta(days=I.EERSTE_VENSTER_DAGEN)).timestamp() * 1000)
     raw = _get(sessie, "chatsvcagg", f"{HOST}/api/csa/{quote(csa)}/api/v1/teams/users/me/updates?isPrefetch=false")
-    berichten, nieuw_wl, tel = [], {}, {"chats": 0, "kanalen": 0, "fouten": 0}
+    berichten, nieuw_wl, tel = [], {}, {"chats": 0, "kanalen": 0, "fouten": 0, "401": 0, "goed": 0}
     for c in raw.get("chats") or []:
         cid = str(c.get("id") or "")
         if not cid or cid in BLACKLIST or cid.startswith("48:"):
@@ -198,8 +198,10 @@ def verzamel(sessie, st):
                     break
                 url = link   # vangnet toetst de host (alleen teams.microsoft.com)
             nieuw_wl[cid] = hoogste
+            tel["goed"] += 1
         except LoginNodig:
-            raise
+            tel["401"] += 1   # één chat met 401 is nog geen uitgelogd account (review); zie onder
+            tel["fouten"] += 1
         except Exception as e:
             tel["fouten"] += 1
             log("teams_chat_fout", code=type(e).__name__, http=getattr(e, "status", 0))
@@ -223,11 +225,15 @@ def verzamel(sessie, st):
                     berichten.append(b)
                     hoogste = max(hoogste, b["_ms"])
             nieuw_wl[kid] = hoogste
+            tel["goed"] += 1
         except LoginNodig:
-            raise
+            tel["401"] += 1
+            tel["fouten"] += 1
         except Exception as e:
             tel["fouten"] += 1
             log("teams_kanaal_fout", code=type(e).__name__, http=getattr(e, "status", 0))
+    if tel["401"] and not tel["goed"]:
+        raise LoginNodig()   # alles 401: dan is de inlog echt weg
     return berichten, nieuw_wl, tel
 
 
@@ -249,7 +255,7 @@ def ronde(modus="proef"):
         ids.add(b["id"])
         uniek.append(b)
     dry = modus != "live"
-    klassen, fouten_op_rij, verstuurd = {}, 0, 0
+    klassen, fouten_op_rij, verstuurd, ooit_fout = {}, 0, 0, False
     for i in range(0, len(uniek), BATCH):
         blok = uniek[i:i + BATCH]
         payload = [{k: v for k, v in b.items() if not k.startswith("_")} for b in blok]
@@ -259,6 +265,7 @@ def ronde(modus="proef"):
                 raise RuntimeError("ok=false")
         except Exception as e:
             fouten_op_rij += 1
+            ooit_fout = True
             log("teams_blok_mislukt", code=type(e).__name__, aantal=len(blok))
             if fouten_op_rij >= MAX_OPEENVOLGENDE_FOUTEN:
                 webhook.alarm("teams", "webhook", "teams-classificatie-webhook faalt herhaaldelijk")
@@ -275,15 +282,15 @@ def ronde(modus="proef"):
                 gezien[b["id"]] = nu.isoformat()
         if not dry:
             staat.schrijf("teams", st)
-    if not dry and fouten_op_rij == 0:
-        st.setdefault("wl", {}).update(nieuw_wl)
+    if not dry and not ooit_fout:
+        st.setdefault("wl", {}).update(nieuw_wl)   # review MOET 2: één mislukt blok = waterlijnen blijven staan
     grens = (nu - timedelta(days=STATE_BEWAAR_DAGEN)).isoformat()
     st["gezien"] = {k: v for k, v in gezien.items() if v >= grens}
     staat.schrijf("teams", st)
-    uit = {"status": "ok" if fouten_op_rij == 0 else "webhook_fout", "modus": modus, "nieuw": len(uniek),
+    uit = {"status": "ok" if not ooit_fout else "webhook_fout", "modus": modus, "nieuw": len(uniek),
            "verstuurd": verstuurd, "chats": tel["chats"], "kanalen": tel["kanalen"], "fouten": tel["fouten"],
            "ids": ids_hash(b["id"] for b in uniek), **klassen}
-    if verstuurd == 0:
+    if verstuurd == 0 and not ooit_fout and not dry:
         try:
             webhook.levensteken("teams")
         except Exception:

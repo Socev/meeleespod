@@ -69,7 +69,11 @@ def controleer_get(url, dienst=None):
         _weiger("geen_https", host, dienst)
     if d.username or d.password:
         _weiger("gebruiker_in_url", host, dienst)
-    if d.port not in (None, 443):
+    try:
+        poort = d.port
+    except ValueError:
+        _weiger("poort_onleesbaar", host, dienst)
+    if poort not in (None, 443):
         _weiger("vreemde_poort", host, dienst)
     if host not in I.GET_HOSTS:
         _weiger("host_niet_toegestaan", host, dienst)

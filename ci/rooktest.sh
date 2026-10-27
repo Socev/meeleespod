@@ -23,6 +23,7 @@ eis "API-poort heeft geen inlogknop" "$(c -X POST -H 'X-Meelees-Knop: 1' $A/inlo
 eis "pagina-poort heeft geen API" "$(c -H "Authorization: Bearer $SLEUTEL" $P/api/stand)" 404
 eis "inlogpagina" "$(c $P/)" 200
 eis "knop zonder kop geweigerd" "$(c -X POST $P/inloggen?dienst=outlook)" 403
+eis "status van een onbekende aanvraag" "$(c -H 'X-Meelees-Aanvraag: verzonnen' "$P/inloggen/status?id=verzonnen")" 404
 eis "knop van andere site geweigerd" "$(c -X POST -H 'X-Meelees-Knop: 1' -H 'Origin: https://kwaad.example' $P/inloggen?dienst=outlook)" 403
 eis "VNC zonder code geweigerd" "$(c -H 'Upgrade: websocket' -H 'Connection: Upgrade' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' -H 'Origin: http://127.0.0.1:18080' "$P/vnc/ws?code=verzonnen")" 403  # gitleaks:allow (RFC 6455-voorbeeld)
 eis "noVNC aanwezig" "$(c $P/novnc/core/rfb.js)" 200
@@ -31,7 +32,7 @@ eis "geen sessie- of profielbestanden zonder inlog" "$(sudo find "$M/geheim" -ty
 docker exec meelees-rook python3 -m meeleespod zelftoets
 docker exec meelees-rook python3 -m meeleespod beleidtoets
 docker exec meelees-rook sh -c 'node /app/vanger/dist/vanger/src/vanger.js; echo "exit=$?"' | tee /tmp/vanger.uit
-grep -q '"code":"GEBRUIK"' /tmp/vanger.uit && grep -q '^exit=1$' /tmp/vanger.uit && echo "  OK    vanger laadt (zonder opdracht: GEBRUIK)"
+if grep -q '"code":"GEBRUIK"' /tmp/vanger.uit && grep -q '^exit=1$' /tmp/vanger.uit; then echo "  OK    vanger laadt (zonder opdracht: GEBRUIK)"; else echo "::error::vanger laadt niet goed"; exit 1; fi
 docker exec meelees-rook node -e "require('/app/vanger/dist/vendor/outlook-access/src/auth/browser-capture.js'); require('/app/vanger/dist/vendor/teams-access/src/auth/browser-capture.js'); console.log('  OK    vangmodules laden (playwright gevonden)')"
 D=$(mktemp -d); docker cp meelees-rook:/app/vanger/dist "$D/dist"; docker cp meelees-rook:/app/meeleespod "$D/py"
 bash "$(dirname "$0")/bundel_grep.sh" "$D/dist" "$D/py"
@@ -40,5 +41,5 @@ for t in send-mail reply forward move-mail send-message lookup-users cli.js outl
 done; echo "  OK    geen schrijvende pakketbestanden in het image"
 if docker logs meelees-rook 2>&1 | grep -E "$SLEUTEL|nep-ci-webhook|Bearer" ; then echo "::error::sleutel in het log"; exit 1; fi
 echo "  OK    geen sleutels in het log"
-sudo test "$(sudo stat -c %a "$M/staat/sleutels.json")" = 600 && echo "  OK    sleutels.json 0600"
+eis "sleutels.json 0600" "$(sudo stat -c %a "$M/staat/sleutels.json")" 600
 echo "rooktest: GESLAAGD"

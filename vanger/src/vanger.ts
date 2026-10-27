@@ -46,8 +46,9 @@ const POPUP_HOSTS = [
 const TEAMS_AUD: Record<string, string> = {
   chatsvcagg: 'https://chatsvcagg.teams.microsoft.com',
   ic3: 'https://ic3.teams.office.com',
-  graph: 'https://graph.microsoft.com',
 };
+// Graph wordt NIET bewaard; alleen gemeten of het token Mail.Read draagt (ontwerp § 4: Graph als tweede leesroute).
+const GRAPH_AUD = 'https://graph.microsoft.com';
 
 function klaar(uitslag: Record<string, unknown>, code: number): never {
   process.stdout.write(JSON.stringify(uitslag) + '\n');
@@ -118,7 +119,8 @@ function soortFout(e: unknown): { code: string; exit: number } {
   if (c.code === 'LOGIN_TIMEOUT' || c.code === 'NO_TOKEN' || c.code === 'AUTH_CANCELLED' || c.exitCode === 4) {
     return { code: 'LOGIN_NODIG', exit: UIT_LOGIN };
   }
-  if (/timeout|no bearer|not authenticated|sign-?in|login/i.test(bericht)) {
+  // Teams meldt "geen bearer binnen de tijd" als tekst; een kale 'timeout' (traag netwerk) is GEEN uitgelogd (review).
+  if (/no bearer|not authenticated|auth(entication)? required|login timeout/i.test(bericht)) {
     return { code: 'LOGIN_NODIG', exit: UIT_LOGIN };
   }
   return { code: 'FOUT', exit: UIT_FOUT };
@@ -159,34 +161,41 @@ async function vangTeams(modus: Modus, uitMap: string, profiel: string): Promise
     chromeChannel: 'chromium',
     profileDir: profiel,
     headless: false,
-    diagnosticExtraMs: 40_000,
+    // na de vangst nog even open om alle audiences te zien; zichtbaar korter (venster als David = zo kort mogelijk)
+    diagnosticExtraMs: modus === 'zichtbaar' ? 25_000 : 40_000,
   };
   if (modus === 'stil') {
     // zelfde drempels als teams-cli auth-renew (auth-renew.ts RENEW_EVICT_BELOW_TTL_S / RENEW_FLOOR_TTL_S)
     opties.evictBelowTtlS = 1500;
     opties.captureFloorTtlS = 900;
   }
-  const s = await captureSession(opties);
+  const home = process.env.HOME || '';
+  const ruimOp = (): void => {
+    // De pakketcode schreef alles (alle audiences + alle cookies) in $HOME/.teams-cli: altijd weg, ook na een fout.
+    for (const f of ['session.json', 'multi-tokens.json', 'login-trace.jsonl', 'multi-tokens.json.tmp']) {
+      try {
+        fs.rmSync(path.join(home, '.teams-cli', f), { force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  };
+  let s;
+  try {
+    s = await captureSession(opties);
+  } finally {
+    ruimOp();
+  }
   const tokens: Record<string, { token: string; exp?: number }> = {};
   const aanwezig: Record<string, boolean> = {};
-  let mailRead = false;
   for (const [naam, aud] of Object.entries(TEAMS_AUD)) {
     const t = s.tokens?.[aud];
     aanwezig[naam] = Boolean(t && t.bearerToken);
-    if (t && t.bearerToken) {
-      tokens[naam] = { token: t.bearerToken, exp: t.exp };
-      if (naam === 'graph' && typeof t.scp === 'string') mailRead = /(^|\s)Mail\.Read(\s|$)/.test(t.scp);
-    }
+    if (t && t.bearerToken) tokens[naam] = { token: t.bearerToken, exp: t.exp };
   }
-  // De pakketcode schreef alles (alle audiences + alle cookies) in $HOME/.teams-cli: weg ermee. Het browserprofiel blijft.
-  const home = process.env.HOME || '';
-  for (const f of ['session.json', 'multi-tokens.json', 'login-trace.jsonl']) {
-    try {
-      fs.rmSync(path.join(home, '.teams-cli', f), { force: true });
-    } catch {
-      /* best effort */
-    }
-  }
+  const g = s.tokens?.[GRAPH_AUD];
+  aanwezig.graph = Boolean(g && g.bearerToken);
+  const mailRead = Boolean(g && typeof g.scp === 'string' && /(^|\s)Mail\.Read(\s|$)/.test(g.scp));
   if (!aanwezig.chatsvcagg || !aanwezig.ic3) {
     klaar({ ok: false, dienst: 'teams', code: 'ONVOLLEDIG', audiences: aanwezig }, UIT_LOGIN);
   }

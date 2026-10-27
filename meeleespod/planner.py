@@ -3,6 +3,7 @@
 - Een dienst draait pas na de eerste geslaagde handmatige inlog; daarvoor geen rondes en geen alarm.
 - Modus per dienst: proef (dry_run: n8n classificeert, bewaart niets), live, of uit. Outlook en Teams beginnen in proef
   (ontwerp § 8.1), Parro begint live met zaaien (§ 8.2). Omzetten via /api/modus.
+  Proef draait NOOIT vanzelf (review MOET 5: elk uur het hele venster opnieuw naar Qwen); alleen via /api/ronde.
 - Login nodig: één alarm [dienst/login] bij de overgang, daarna hooguit 1x per 24 u; hersteld = alarmstempel weg.
 - Vooraankondiging: 80 dagen na de laatste handmatige inlog één bericht.
 """
@@ -96,11 +97,13 @@ def _lezer(dienst):
     return parro
 
 
-def draai(dienst):
+def draai(dienst, handmatig=False):
     """Eén ronde voor `dienst`, inclusief stil vernieuwen. Schrijft de uitkomst in de stand."""
     s = stand()[dienst]
     modus = s.get("modus", STANDAARD_MODUS[dienst])
     if modus == "uit" or not s.get("ingelogd_sinds") or not I.DIENST_AAN[dienst]:
+        return None
+    if modus == "proef" and not handmatig:
         return None
     if not webhook.gekoppeld(dienst):
         zet(dienst, laatste_fout={"tijd": nu_iso(), "code": "GEEN_SLEUTEL"})
@@ -111,18 +114,29 @@ def draai(dienst):
         lezer = _lezer(dienst)
         if dienst in ("outlook", "teams") and lezer.vernieuw_nodig():
             if not vangst.browser_slot.acquire(timeout=600):
+                zet(dienst, laatste_fout={"tijd": nu_iso(), "code": "BROWSER_BEZET"})
                 return None
             try:
                 code, uitslag = vangst.draai_vanger(dienst, "stil", 300)
+                vangst.wis_berichtcache(dienst)
             finally:
                 vangst.browser_slot.release()
             if code == 0 and uitslag.get("ok"):
-                zet(dienst, geldig_tot=uitslag.get("geldig_tot"))
+                velden = {"geldig_tot": uitslag.get("geldig_tot"), "vernieuw_fouten": 0}
+                if s.get("vooraankondiging"):
+                    # ontwerp § 7: lukt stil vernieuwen na de vooraankondiging gewoon, dan schuift de datum mee
+                    velden.update(ingelogd_sinds=nu_iso(), vooraankondiging=None)
+                zet(dienst, **velden)
             elif code == 4:
                 login_nodig(dienst)
                 return {"status": "login_nodig"}
             else:
-                zet(dienst, laatste_fout={"tijd": nu_iso(), "code": str(uitslag.get("code") or "VERNIEUW_FOUT")[:32]})
+                n = int(s.get("vernieuw_fouten") or 0) + 1
+                zet(dienst, vernieuw_fouten=n,
+                    laatste_fout={"tijd": nu_iso(), "code": str(uitslag.get("code") or "VERNIEUW_FOUT")[:32]})
+                if n >= 3:
+                    webhook.alarm(dienst, "vernieuwen", f"stil vernieuwen van {dienst} lukt al {n} keer op rij niet "
+                                  "(netwerk of browser, geen uitlog)")
                 return {"status": "vernieuw_fout"}
         uit = lezer.ronde(modus) if dienst != "parro" else lezer.ronde()
     except Exception as e:
@@ -133,7 +147,10 @@ def draai(dienst):
     uit["duur_s"] = round(time.time() - t0, 1)
     ronde = {"tijd": nu_iso(), **{k: v for k, v in uit.items() if isinstance(v, (int, float, str)) or v is None}}
     velden = {"laatste_ronde": ronde}
-    if uit.get("status") == "login_nodig":
+    if uit.get("status") == "niet_ingelogd":
+        # review MOET 3: sessiebestand weg (app-cache leeg na upgrade/herplaatsing) terwijl er ooit is ingelogd
+        login_nodig(dienst)
+    elif uit.get("status") == "login_nodig":
         login_nodig(dienst)
     elif uit.get("status") == "ok":
         hersteld(dienst)
@@ -152,7 +169,7 @@ def _vooraankondiging():
     for d in I.DIENSTEN:
         s = stand()[d]
         sinds = s.get("ingelogd_sinds")
-        if not sinds or s.get("vooraankondiging"):
+        if not sinds or s.get("vooraankondiging") or not I.DIENST_AAN[d] or s.get("modus") == "uit":
             continue
         try:
             if datetime.now(timezone.utc) - datetime.fromisoformat(sinds) >= timedelta(days=I.VOORAANKONDIGING_DAGEN):
@@ -180,9 +197,10 @@ def lus(stop):
                     handmatig = d in _wachtrij
                     _wachtrij.discard(d)
                 if handmatig or _gepland(d, nu, laatst):
-                    laatst[d] = nu.strftime("%Y-%m-%dT%H")
-                    staat.schrijf("planner", laatst)
-                    draai(d)
+                    if not handmatig:
+                        laatst[d] = nu.strftime("%Y-%m-%dT%H")
+                        staat.schrijf("planner", laatst)
+                    draai(d, handmatig=handmatig)
             if nu.minute == 0:
                 _vooraankondiging()
         except Exception as e:

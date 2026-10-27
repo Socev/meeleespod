@@ -24,6 +24,9 @@ MAX_TEKST = 6000
 STATE_BEWAAR_DAGEN = 45
 OVERLAP = timedelta(hours=2)
 MAX_PAGINAS = 40
+MAX_MAPPEN = 500
+MAX_MAPDIEPTE = 4
+VENSTER_MIN = timedelta(days=2)   # altijd minstens 2 dagen terug (review: mail die later uit Ongewenst komt)
 MAX_OPEENVOLGENDE_FOUTEN = 3
 SB_ALIAS = "+sb@gmail.com"
 UITGESLOTEN_ALIASSEN = ("JunkEmail", "DeletedItems", "Drafts", "Outbox", "ConversationHistory", "Archive",
@@ -108,6 +111,15 @@ def _tekst(b):
     return ""
 
 
+def _iso(v):
+    """Zelfde vorm als de pc (datetime.isoformat in UTC: +00:00, geen Z)."""
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
 def naar_mail(m, mapnamen):
     """v2.0-bericht → het pc-formaat voor /webhook/outlook-classificatie. None = overslaan."""
     if m.get("IsDraft") is True:
@@ -127,25 +139,16 @@ def naar_mail(m, mapnamen):
         "id": mid[:300], "thread_id": (m.get("ConversationId") or "")[:300], "map": mapnaam,
         "van": van_n[:200], "van_email": van_e[:200], "aan": aan_n[:300],
         "onderwerp": (m.get("Subject") or "")[:300], "tekst": tekst[:MAX_TEKST],
-        "ontvangen": m.get("ReceivedDateTime"), "bijlagen": [], "heeft_bijlagen": bool(m.get("HasAttachments")),
+        "ontvangen": _iso(m.get("ReceivedDateTime")), "bijlagen": [], "heeft_bijlagen": bool(m.get("HasAttachments")),
         "_v2id": m.get("Id"),
     }
 
 
 # ---- mappen -----------------------------------------------------------------------------------------------------------
 def mappen(sessie):
-    """Geeft (mapnamen {id: naam}, uitgesloten {id})."""
+    """Geeft (mapnamen {id: naam}, uitgesloten {id}). Loopt ook submappen door (review: alleen het hoogste niveau
+    miste 'Archief' e.d. als submap); een submap van een uitgesloten map is ook uitgesloten."""
     namen, uit = {}, set()
-    url = f"{BASIS}/MailFolders?" + _qs({"$top": "250", "$select": "Id,DisplayName"})
-    for _ in range(5):
-        j = _get(sessie, url)
-        for f in j.get("value") or []:
-            namen[f.get("Id")] = f.get("DisplayName") or ""
-            if (f.get("DisplayName") or "").strip().lower() in MAP_UITSLUITEN_NAAM:
-                uit.add(f.get("Id"))
-        url = j.get("@odata.nextLink")
-        if not url:
-            break
     for alias in UITGESLOTEN_ALIASSEN:
         try:
             j = _get(sessie, f"{BASIS}/MailFolders/{alias}?" + _qs({"$select": "Id,DisplayName"}))
@@ -154,6 +157,25 @@ def mappen(sessie):
                 namen.setdefault(j["Id"], j.get("DisplayName") or alias)
         except vangnet.HttpFout:
             continue
+    rij = [(f"{BASIS}/MailFolders?" + _qs({"$top": "250", "$select": "Id,DisplayName,ChildFolderCount"}), False, 0)]
+    bekeken = 0
+    while rij and bekeken < MAX_MAPPEN:
+        url, ouder_uit, diepte = rij.pop(0)
+        for _ in range(5):
+            j = _get(sessie, url)
+            for f in j.get("value") or []:
+                fid = f.get("Id")
+                bekeken += 1
+                namen[fid] = f.get("DisplayName") or ""
+                weg = ouder_uit or fid in uit or (f.get("DisplayName") or "").strip().lower() in MAP_UITSLUITEN_NAAM
+                if weg:
+                    uit.add(fid)
+                if (f.get("ChildFolderCount") or 0) > 0 and diepte < MAX_MAPDIEPTE:
+                    rij.append((f"{BASIS}/MailFolders/{quote(fid, safe='')}/childfolders?" +
+                                _qs({"$top": "250", "$select": "Id,DisplayName,ChildFolderCount"}), weg, diepte + 1))
+            url = j.get("@odata.nextLink")
+            if not url:
+                break
     return namen, uit
 
 
@@ -172,11 +194,13 @@ def berichten_sinds(sessie, sinds):
 
 
 def bijlage_metadata(sessie, v2id):
-    url = f"{BASIS}/messages/{quote(v2id, safe='')}/attachments?" + _qs({"$select": "Id,Name,ContentType,Size,IsInline"})
+    url = f"{BASIS}/messages/{quote(v2id, safe='')}/attachments?" + _qs({"$select": "Id,Name,ContentType,Size,IsInline,ContentId"})
     uit = []
     for a in _get(sessie, url).get("value") or []:
-        uit.append({"naam": (a.get("Name") or "")[:200], "type": (a.get("ContentType") or "").split(";")[0].strip().lower()[:100],
-                    "bytes": int(a.get("Size") or 0), "inline": bool(a.get("IsInline")), "id": (a.get("Id") or "")[:200],
+        ct = (a.get("ContentType") or "").split(";")[0].strip().lower()
+        inline = bool(a.get("IsInline")) or (bool(a.get("ContentId")) and ct.startswith("image/"))   # zoals de pc
+        uit.append({"naam": (a.get("Name") or "")[:200], "type": ct[:100],
+                    "bytes": int(a.get("Size") or 0), "inline": inline, "id": (a.get("Id") or "")[:200],
                     "_soort": a.get("@odata.type") or ""})
     return uit
 
@@ -195,7 +219,7 @@ def ronde(modus="proef"):
         wl = datetime.fromisoformat(st["waterlijn"]) if st.get("waterlijn") else None
     except ValueError:
         wl = None
-    sinds = (wl - OVERLAP) if wl else nu - timedelta(days=I.EERSTE_VENSTER_DAGEN)
+    sinds = min(wl - OVERLAP, nu - VENSTER_MIN) if wl else nu - timedelta(days=I.EERSTE_VENSTER_DAGEN)
     try:
         namen, uitgesloten = mappen(sessie)
         ruw = berichten_sinds(sessie, sinds)
@@ -226,6 +250,7 @@ def ronde(modus="proef"):
                 pass
     dry = modus != "live"
     tel, fouten_op_rij, verstuurd, bijl_tel = {}, 0, 0, {"doorgelaten": 0, "geweigerd": 0}
+    ooit_fout = False   # review MOET 2: één mislukt blok = waterlijn blijft staan (gezien voorkomt dubbel versturen)
     for i in range(0, len(mails), BATCH):
         blok = mails[i:i + BATCH]
         payload = [{k: v for k, v in m.items() if not k.startswith("_")} for m in blok]
@@ -235,6 +260,7 @@ def ronde(modus="proef"):
                 raise RuntimeError("ok=false")
         except Exception as e:
             fouten_op_rij += 1
+            ooit_fout = True
             log("outlook_blok_mislukt", code=type(e).__name__, aantal=len(blok))
             if fouten_op_rij >= MAX_OPEENVOLGENDE_FOUTEN:
                 webhook.alarm("outlook", "webhook", "outlook-classificatie-webhook faalt herhaaldelijk")
@@ -247,9 +273,12 @@ def ronde(modus="proef"):
             r = per_id.get(m["id"])
             klasse = r.get("klasse") if isinstance(r, dict) and isinstance(r.get("klasse"), str) else None
             tel[klasse or "geen_oordeel"] = tel.get(klasse or "geen_oordeel", 0) + 1
-            if klasse:
-                oordelen[m["id"]] = {"klasse": klasse, "tijd": nu.isoformat()}   # alleen de klasse, geen tekst
             if not dry:
+                # alleen een oordeel uit een live-ronde telt; ontbreekt het, dan weg met een oud oordeel (review)
+                if klasse:
+                    oordelen[m["id"]] = {"klasse": klasse, "tijd": nu.isoformat()}   # alleen de klasse, geen tekst
+                else:
+                    oordelen.pop(m["id"], None)
                 gezien[m["id"]] = nu.isoformat()
                 if I.BIJLAGEN_AAN:
                     d, g = bijlagen_voor_mail(sessie, m, oordelen)
@@ -263,17 +292,17 @@ def ronde(modus="proef"):
             nieuwste = t if nieuwste is None or t > nieuwste else nieuwste
         except ValueError:
             pass
-    if not dry and fouten_op_rij == 0 and nieuwste:
+    if not dry and not ooit_fout and nieuwste:
         st["waterlijn"] = nieuwste.isoformat()
     grens = (nu - timedelta(days=STATE_BEWAAR_DAGEN)).isoformat()
     st["gezien"] = {k: v for k, v in gezien.items() if v >= grens}
     staat.schrijf("outlook", st)
     staat.schrijf("oordelen", {k: v for k, v in oordelen.items() if v.get("tijd", "") >= grens})
-    uit = {"status": "ok" if fouten_op_rij == 0 else "webhook_fout", "modus": modus, "gezien": len(ruw), "nieuw": len(mails),
+    uit = {"status": "ok" if not ooit_fout else "webhook_fout", "modus": modus, "gezien": len(ruw), "nieuw": len(mails),
            "verstuurd": verstuurd, "overig": n_uit, "ids": ids_hash(m["id"] for m in mails), **tel}
     if I.BIJLAGEN_AAN and not dry:
         uit.update(bijl_tel)
-    if verstuurd == 0:
+    if verstuurd == 0 and not ooit_fout and not dry:
         try:
             webhook.levensteken("outlook")
         except Exception:
