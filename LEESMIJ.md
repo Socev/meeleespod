@@ -32,7 +32,8 @@ komt er geen venster. Alleen als echt ingelogd moet worden, start x11vnc (alleen
 en krijgt alleen de aanvrager (aanvraagtoken) een eenmalige code (2 min geldig, één verbinding, in de URL-hash). In dat
 venster staat dan de inlogpagina van Microsoft of Parro, geen postvak. Het sluit zodra het token gevangen is of na
 10 min; elke start gaat als `[dienst/inlogvenster]`-regel naar n8n. Browserbeleid: kiosk, geen downloads, geen
-ontwikkelaarsgereedschap, chrome:// en file:// geblokkeerd, popups buiten de inloghosts dicht. Na elke vangst en elke
+ontwikkelaarsgereedschap (devtools:// geblokkeerd; het beleid DeveloperToolsAvailability kan niet: dat sluit ook het
+besturingskanaal van Playwright), chrome:// en file:// geblokkeerd, popups buiten de inloghosts dicht. Na elke vangst en elke
 Parro-ronde worden IndexedDB, Cache Storage, service workers en sessieopslag uit het profiel gewist (Teams-web en OWA
 bewaren daar berichten); cookies en Local Storage (de MSAL-sessie) blijven.
 

@@ -91,17 +91,21 @@ def beleidtoets():
     vangst.zorg_voor_scherm()
     omg = vangst.kind_omgeving("parro")
     os.environ["DISPLAY"], os.environ["XAUTHORITY"] = omg["DISPLAY"], omg["XAUTHORITY"]
+    uitkomsten = {}
     with sync_playwright() as pw, tempfile.TemporaryDirectory() as prof:
-        ctx = pw.chromium.launch_persistent_context(prof, headless=False, accept_downloads=False)
+        ctx = pw.chromium.launch_persistent_context(prof, headless=False, accept_downloads=False, timeout=60000)
         p = ctx.new_page()
-        try:
-            p.goto("chrome://version", timeout=15000)
-            uitkomst = "NIET geblokkeerd"
-        except Exception as e:
-            uitkomst = "geblokkeerd" if "ERR_BLOCKED_BY_ADMINISTRATOR" in str(e) else "andere fout: " + type(e).__name__
+        # chrome://version = bewijs dat het beleid geladen is; devtools:// = het ontwikkelaarsgereedschap kan niet laden
+        for url in ("chrome://version", "devtools://devtools/bundled/inspector.html", "file:///etc/passwd"):
+            try:
+                p.goto(url, timeout=15000)
+                uitkomsten[url] = "NIET geblokkeerd"
+            except Exception as e:
+                uitkomsten[url] = "geblokkeerd" if "ERR_BLOCKED_BY_ADMINISTRATOR" in str(e) else "andere fout: " + type(e).__name__
         ctx.close()
-    print("beleid chrome://version:", uitkomst)
-    return 0 if uitkomst == "geblokkeerd" else 1
+    for url, u in uitkomsten.items():
+        print(("  OK    " if u == "geblokkeerd" else "  FOUT  ") + f"beleid {url}: {u}")
+    return 0 if all(u == "geblokkeerd" for u in uitkomsten.values()) else 1
 
 
 if __name__ == "__main__":
