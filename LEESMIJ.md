@@ -38,9 +38,18 @@ Parro-ronde worden IndexedDB, Cache Storage, service workers en sessieopslag uit
 bewaren daar berichten); cookies en Local Storage (de MSAL-sessie) blijven.
 
 Waarom eerst stil (review 27-10, MOET 1): Origin en Host bewijzen alleen iets tegenover een browser. Een proces in het
-clusternetwerk dat de pagina-poort rechtstreeks bereikt, kan ze zelf invullen. Of dat kan (envoy-sidecar van Olares
-vóór de poort?) is in B1 niet vast te stellen; daarom kan zo'n proces hooguit een Microsoft-inlogpagina openen, nooit
-een ingelogd postvak. Meten in B2 vanuit de claudebot-pod.
+clusternetwerk dat de pagina-poort bereikt, kan ze zelf invullen. Daarom kan zo'n proces hooguit een Microsoft-inlogpagina
+openen, nooit een ingelogd postvak.
+
+**Gemeten 27-10-2026 (B2, wv1716) vanuit de claudebot-pod:**
+- Via het olares.com-adres van de inlogpagina (`9c3d81170.primumnonnocere.olares.com`, binnen Olares 192.168.20.54) komt
+  een pod op Olares er **zonder Olares-login** bij (`/gezond` en `/stand.json` 200), en de knopkop + Origin zijn na te
+  maken: `POST /inloggen?dienst=onbekend` met `X-Meelees-Knop: 1` en `Origin: https://9c3d81170…` gaf 400 (onbekende
+  dienst) in plaats van 403. Een proces in het cluster kan dus de inlogknop drukken (en als aanvrager de VNC-code krijgen).
+- Via de publieke tunnel (`--resolve` naar het publieke IP) gaven beide ingangen 302 naar de Olares-login.
+- `meeleespod.meeleespod-primumnonnocere.svc.cluster.local:8080/8081` is vanuit claudebot dicht (linkerd 503 / reset).
+- Gevolg: authLevel private beschermt alleen tegen het netwerk buiten Olares, niet tegen andere apps op Olares. De
+  stil-eerst-regel blijft daarom nodig; een knop die een venster sluit is ook vanuit het cluster te drukken.
 
 ## Wat de pod verlaat (precies dit)
 POST naar de vaste adressen in `meeleespod/instellingen.py` (outlook-classificatie, teams-classificatie,
@@ -82,3 +91,12 @@ Chart: `olares-cli chart lint chart/meeleespod`, inpakken met `chart/pak.sh` (al
 Olares → Market → Upload custom chart (`meeleespod-<versie>.tgz`); daarna de pagina openen en per dienst één keer
 inloggen. Machinekamer: adres van de API-ingang in `/opt/data/.meeleespod/adres`, webhooksleutels via
 `socev/meelees.py koppel <bestand>`.
+
+Sinds 27-10-2026 installeert en werkt de machinekamer zelf bij: `olares-eigen upload chart/meeleespod-<versie>.tgz`,
+daarna `olares-eigen installeer meeleespod <versie>` (eerste keer) of `olares-eigen upgrade meeleespod <versie>`.
+Adressen (gemeten 27-10): inlogpagina `https://9c3d81170.primumnonnocere.olares.com`, API
+`https://9c3d81171.primumnonnocere.olares.com` (appid = md5("meeleespod")[:8] + volgnummer van de ingang).
+Een upgrade (0.0.1 → 0.0.2) liet `/staat` (sleutels, stand) én `/geheim` (Outlook-sessie) staan.
+
+Verbindingsfouten (sinds 0.0.2): `laatste_ronde.code` = `VERBIND_<DNS|CERT|TLS|GEWEIGERD|RESET|TIMEOUT|GEEN_ROUTE|OS<errno>|OVERIG>_<HOST>`,
+in het log `verbind_fout host=… code=…`; geen fouttekst.
