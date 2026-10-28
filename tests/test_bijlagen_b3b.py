@@ -288,3 +288,24 @@ def test_dubbele_zipnaam_geweigerd():
             z.writestr("word/document.xml", DOC.format(extra=""))
             z.writestr("Word/Document.xml", DOC.format(extra=""))
     assert bijlagen.beoordeel("d.docx", b.getvalue())["reden"] == "office_dubbele_delen"
+
+
+def test_binair_vormdeel_met_xml_wordt_gelezen():
+    ct = CT.replace("</Types>", '<Default Extension="bin" ContentType="application/vnd.openxmlformats-officedocument.'
+                    'wordprocessingml.printerSettings"/><Default Extension="odttf" ContentType="application/vnd.'
+                    'openxmlformats-officedocument.obfuscatedFont"/></Types>')
+    kop = b" " * 100 + b"<w:hdr><w:p><w:r><w:t>GEHEIM-IN-BIN</w:t></w:r></w:p></w:hdr>"
+    r = bijlagen.beoordeel("n.docx", _docx({"word/printerSettings/printerSettings1.bin": kop}, ct=ct))
+    assert r["door"] is True and "GEHEIM-IN-BIN" in r["tekst"]
+    # een echt binair lettertype levert geen rommel op
+    r = bijlagen.beoordeel("n.docx", _docx({"word/fonts/font1.odttf": bytes(range(256)) * 40}, ct=ct))
+    assert r["door"] is True and "\ufffd" not in r["tekst"]
+
+
+def test_binair_deel_met_ander_inhoudstype_geweigerd():
+    """Via [Content_Types] als koptekst aangewezen: dan is het geen printerinstelling meer."""
+    ct = CT.replace("</Types>", '<Override PartName="/word/printerSettings/printerSettings1.bin" ContentType="application/vnd.'
+                    'openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>')
+    r = bijlagen.beoordeel("n.docx", _docx({"word/printerSettings/printerSettings1.bin": b"<w:hdr/>"}, ct=ct))
+    assert r["reden"] == "office_inhoudstype_vreemd"
+    assert bijlagen.beoordeel("n.docx", _docx({"word/fonts/font1.odttf": b"\x00" * 10}))["reden"] == "office_inhoudstype_vreemd"

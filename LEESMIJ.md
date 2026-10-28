@@ -16,10 +16,42 @@ sleutels draaien). Ontwerp: vault `01_Ontwikkeling/Meeleespod - Outlook, Teams e
   Parro begint `live` met **zaaien** (alles van vóór 25-10 15:17, de laatste pc-ronde, geldt als verstuurd; § 8.2).
   Een dienst draait pas na de eerste geslaagde inlog; daarvoor geen rondes en geen alarm. `proef` draait nooit vanzelf:
   één proefronde volgt op de inlog, daarna alleen via `/api/ronde`; `live` zet de machinekamer met `/api/modus`.
-- **Bijlagen** (`bijlagen.py`, ontwerp § 5.3): alleen bij een uitdrukkelijk oordeel zakelijk/twijfel uit een
-  live-ronde, alleen echte tekstlaag (pdf ≥ 200 tekens/pagina, geen beeld met kortste zijde ≥ 300 px of ≥ 250.000 px,
-  geen ingesloten bestanden; docx/xlsx zonder plaatje > 50 kB); scans en foto's nooit. Staat **uit**
-  (`MEELEES_BIJLAGEN=uit`) tot de n8n-tak `/outlook-bijlage` er is (B3).
+- **Bijlagen** (`bijlagen.py`, ontwerp § 5.3, B3b wv1751): alleen bij een uitdrukkelijk oordeel zakelijk/twijfel uit een
+  live-ronde dat Qwen zelf gaf (n8n `terugval: true` = niet bewaard, nooit bijlagen); alleen echte tekstlaag; scans en
+  foto's nooit. Grenzen gelijk aan n8n: ≤ 11 MiB, tekst ≤ 30.000 tekens (JavaScript-lengte; langer = niet versturen,
+  niet afkappen). Zie **Bijlagenpad** hieronder. Aan sinds chart 0.0.4 (`MEELEES_BIJLAGEN=aan`).
+
+## Bijlagenpad (B3b, wv1751)
+Doel: geen bestand met patiëntgegevens laten doorgaan waarvan Qwen de tekst nooit zag.
+- **docx/xlsx**: witte lijst van onderdelen (tekst-, vorm- of beelddeel); al het andere wordt geweigerd (`office_onbekend_deel`).
+  Altijd weigeren: draaitabel (`xl/pivotCache`, `pivotTables`), externe koppeling, gegevensverbinding (`connections.xml`,
+  `queryTables`, `model/`, slicers), altChunk, ingesloten objecten (`embeddings`, ActiveX), macro's (ook via het
+  inhoudstype), `customXml/`, bouwstenen (`word/glossary`), dubbele zipnamen, versleutelde delen, en relaties van die
+  soorten in een `.rels`. Beeld alleen png/jpeg/gif (magische bytes) ≤ 50 kB en kleiner dan 300 px kortste zijde /
+  250.000 px; emf/wmf/svg nooit (die kunnen tekst dragen). Naar Qwen gaat de tekst van **alle** XML-delen (ook stijlen,
+  thema, instellingen: welk deel Word toont, bepalen `_rels` en `[Content_Types]`, niet de naam), dus ook voetnoten,
+  eindnoten, opmerkingen, verwijderde tekst, veldcodes, bladnamen, formules en documenteigenschappen, plus alle
+  attribuutwaarden met mensentekst (alt-tekst, tooltip, watermerk, docVar, gegevensvalidatie; ontdubbeld, opmaak weg).
+- **pdf**: gemeten (poppler 22.12, verzonnen pdf): `pdftotext` neemt formulierwaarden en FreeText mee, maar niet de tekst van
+  een notitie (`/Text`) of andere opmerking. Daarom weigeren bij een annotatie anders dan `/Link`, een formulier (velden,
+  `/FT`, XFA; een leeg `/AcroForm` mag — gemeten: komt veel voor), ingesloten bestanden, versleuteling, een indirecte
+  `/Subtype`, of een objectstroom die niet met Flate uit te pakken is. Twee lagen: **pypdf 6.21.3** (strikt; per object
+  soepel als strikt struikelt; elk xref-object nagelopen) en een ruwe scan van bytes + objectstromen (NUL/commentaar als
+  witruimte, `#xx`-namen). Titel, onderwerp, trefwoorden, auteur, bladwijzers, XMP en linkomschrijvingen gaan als extra
+  tekst mee. Scanbeelden, ingesloten bestanden en minimale tekst per pagina zoals voorheen.
+- **Afleveren**: `POST /outlook-bijlage` met time-out 960 s (n8n: Qwen tot 3 × 240 s + Jev + Intake), `contact=False`
+  (de contacttijd hoort bij de classificatie). Alleen `ok: true` + `door: true` telt als doorgelaten; `door: false`
+  (200) en andere 4xx zijn een definitieve weigering.
+- **Herkansing**: bij n8n 503 (Qwen), een andere 5xx (Intake legde niet vast), time-out/verbindingsfout of Outlook 5xx gaat
+  alleen `mail_id`, `thread_id`, `v2id`, `bijlage_id`, `pogingen`, `sinds` naar `/staat/bijlage_wachtrij.json` (≤ 50,
+  geen naam, geen inhoud). Eerstvolgende live-ronde: eerst de wachtrij (≤ 10 per ronde), precies 3 herkansingen, dan
+  `bijlage_opgegeven` in het log. Een storing die elke bijlage raakt (n8n 401/403 = sleutel, geen sleutel, Outlook
+  401/429) pauzeert de rest van de ronde zonder netwerk en telt niet als poging. Opnieuw sturen is veilig: de Intake geeft
+  bij een herhaling `dubbel` en n8n antwoordt dan `door: true`.
+- **Stand**: `laatste_ronde` van Outlook toont `doorgelaten`, `geweigerd`, `herkansing`, `opgegeven`, `wachtrij` en
+  `terugval` (alleen aantallen); weigerredenen staan in het log (`bijlage_geweigerd reden=…`).
+- Bewust geweigerd en te meten na live: `customXml/` komt in gewone Word-/SharePoint-documenten voor (bibliografie,
+  metadata) en kost dan een bijlage; tel `reden=office_customxml` in het log voordat je dit verruimt.
 
 ## Ingangen
 | ingang | poort | authLevel | wat |
@@ -35,7 +67,10 @@ venster staat dan de inlogpagina van Microsoft of Parro, geen postvak. Het sluit
 ontwikkelaarsgereedschap (devtools:// geblokkeerd; het beleid DeveloperToolsAvailability kan niet: dat sluit ook het
 besturingskanaal van Playwright), chrome:// en file:// geblokkeerd, popups buiten de inloghosts dicht. Na elke vangst en elke
 Parro-ronde worden IndexedDB, Cache Storage, service workers en sessieopslag uit het profiel gewist (Teams-web en OWA
-bewaren daar berichten); cookies en Local Storage (de MSAL-sessie) blijven.
+bewaren daar berichten); cookies en Local Storage (de MSAL-sessie) blijven. **Parro** (wv1751, gemeten 28-10-2026): de
+Parro-webapp bewaart toegangs- en vernieuwtoken in de IndexedDB-databank `parro_db` (Drift/SQLite); die wissen gaf
+"uitgelogd" zodra het toegangstoken na 1 u verliep. Voor Parro blijven IndexedDB, File System en WebStorage daarom staan
+(Parro bevat geen patiëntgegevens, wel kindergegevens; `/geheim` zit niet in de NAS-back-up); caches gaan wel weg.
 
 Waarom eerst stil (review 27-10, MOET 1): Origin en Host bewijzen alleen iets tegenover een browser. Een proces in het
 clusternetwerk dat de pagina-poort bereikt, kan ze zelf invullen. Daarom kan zo'n proces hooguit een Microsoft-inlogpagina
@@ -76,8 +111,8 @@ een redirect = weigering + alarm.
 - Wie Davids Olares-login met 2FA heeft, kan in een open inlogvenster werken (zoals aan zijn ontgrendelde pc).
 
 ## Opslag
-- `/staat` (app-data): waterlijnen, gezien-lijsten (ids + tijd), oordeel per mail-id (alleen klasse), webhooksleutels,
-  stand. Geen tekst, geen bijlagen.
+- `/staat` (app-data): waterlijnen, gezien-lijsten (ids + tijd), oordeel per mail-id (alleen klasse), bijlage-wachtrij
+  (alleen ids), webhooksleutels, stand. Geen tekst, geen bijlagen.
 - `/geheim` (app-cache, niet in de NAS-back-up): `lezer.json` per dienst en de browserprofielen (0700/0600).
 - `/werk` (tmpfs): bijlage heel even voor pdftotext. `/tmp` (emptyDir): Xvfb, Chromium.
 - Logs: witte lijst (`logboek.py`); van kind-stderr alleen `exit=`, `HTTP nnn`, `code=`.
@@ -97,6 +132,10 @@ daarna `olares-eigen installeer meeleespod <versie>` (eerste keer) of `olares-ei
 Adressen (gemeten 27-10): inlogpagina `https://9c3d81170.primumnonnocere.olares.com`, API
 `https://9c3d81171.primumnonnocere.olares.com` (appid = md5("meeleespod")[:8] + volgnummer van de ingang).
 Een upgrade (0.0.1 → 0.0.2) liet `/staat` (sleutels, stand) én `/geheim` (Outlook-sessie) staan.
+
+Herstel na uitlog (sinds 0.0.4): `planner.hersteld()` wist de contacttijd van die dienst, zodat de eerstvolgende ronde
+meteen een levensteken stuurt en n8n (*Pod-contact?* → *AI - Meeleespod-seintjes*) de login-rij dichtzet.
+Versie: het image weigert te bouwen zonder volledige `GIT_SHA` (geen `pod-dev` meer); de rooktest controleert het.
 
 Verbindingsfouten (sinds 0.0.2): `laatste_ronde.code` = `VERBIND_<DNS|CERT|TLS|GEWEIGERD|RESET|TIMEOUT|GEEN_ROUTE|OS<errno>|OVERIG>_<HOST>`,
 in het log `verbind_fout host=… code=…`; geen fouttekst. Sinds 0.0.3 ook een niet-401 HTTP-fout als `HTTP<status>_<HOST>`

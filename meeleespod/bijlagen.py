@@ -419,8 +419,25 @@ def _xml_tekst(ruw, kenmerken):
 
 
 def _is_xml(ruw):
-    kop = ruw[:64].lstrip(b"\xef\xbb\xbf\xff\xfe\x00 \t\r\n")
-    return kop.startswith(b"<")
+    """XML zodra er na willekeurig veel witruimte een '<' komt (review B3b, tweede ronde: ook bij een 'binaire' naam)."""
+    return ruw.lstrip(b"\xef\xbb\xbf\xff\xfe\x00 \t\r\n").startswith(b"<")
+
+
+# Een binair vormdeel moet ook in [Content_Types] als dat soort staan; anders kan het via _rels een koptekst zijn.
+_BINAIR_TYPE = {".bin": "printersettings", ".odttf": "obfuscatedfont"}
+
+
+def _inhoudstypen(ct_xml):
+    """(Overrides {deelnaam: type}, Defaults {extensie: type}) uit [Content_Types].xml, alles in kleine letters."""
+    over = {html.unescape(a).lstrip("/").lower(): html.unescape(b).lower() for a, b in re.findall(
+        r'<Override\b[^>]*?PartName\s*=\s*["\']([^"\']*)["\'][^>]*?ContentType\s*=\s*["\']([^"\']*)["\']', ct_xml)}
+    over.update({html.unescape(a).lstrip("/").lower(): html.unescape(b).lower() for b, a in re.findall(
+        r'<Override\b[^>]*?ContentType\s*=\s*["\']([^"\']*)["\'][^>]*?PartName\s*=\s*["\']([^"\']*)["\']', ct_xml)})
+    std = {a.lower(): b.lower() for a, b in re.findall(
+        r'<Default\b[^>]*?Extension\s*=\s*["\']([^"\']*)["\'][^>]*?ContentType\s*=\s*["\']([^"\']*)["\']', ct_xml)}
+    std.update({a.lower(): b.lower() for b, a in re.findall(
+        r'<Default\b[^>]*?ContentType\s*=\s*["\']([^"\']*)["\'][^>]*?Extension\s*=\s*["\']([^"\']*)["\']', ct_xml)})
+    return over, std
 
 
 def _beeld_maat(b):
@@ -468,8 +485,16 @@ def _office(b, soort):
             rollen[info.filename] = rol
         if "[Content_Types].xml" not in rollen:
             return None, "office_onleesbaar_deel"
-        if re.search(r"macroEnabled|vbaProject", z.read("[Content_Types].xml").decode("utf-8", "replace"), re.I):
+        ct_xml = z.read("[Content_Types].xml").decode("utf-8", "replace")
+        if re.search(r"macroEnabled|vbaProject", ct_xml, re.I):
             return None, "office_macro"
+        over, std = _inhoudstypen(ct_xml)
+        for n in rollen:
+            ext = "." + n.rsplit(".", 1)[-1].lower() if "." in n else ""
+            if ext in _BINAIR_TYPE:
+                ct = over.get(n.lower()) or std.get(ext[1:], "")
+                if _BINAIR_TYPE[ext] not in ct.replace("-", ""):
+                    return None, "office_inhoudstype_vreemd"
         # Beeld: alleen png/jpeg/gif (op inhoud), klein (review B3b MOET 1: een emf/svg/wmf kan tekst dragen, bv. een
         # als plaatje geplakte tabel; die tekst ziet Qwen niet).
         for n, r in rollen.items():
