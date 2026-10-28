@@ -93,15 +93,22 @@ def _weiger(reden, soort="onbekend"):
 # ---- pdf: formulieren en opmerkingen (review MOET 3) -----------------------------------------------------------------
 # Gemeten 28-10-2026 (poppler 22.12, verzonnen pdf): pdftotext neemt de waarde van een formulierveld en een vrij
 # tekstvak (FreeText) mee, maar NIET de tekst van een notitie (/Text, sticky note) of andere opmerkingen; een verborgen
-# veld tekent hij ook niet. Daarom: een pdf met een formulier (pdfinfo "Form:" ≠ none) of met een annotatie anders dan
-# een link gaat niet door. De annotaties staan vaak in gecomprimeerde objectstromen: die pakken we uit (alleen Flate);
-# een objectstroom die niet uit te pakken is, of een versleutelde pdf, gaat ook niet door (dan zien we niet wat erin staat).
+# veld tekent hij ook niet. Daarom: een pdf met een formulier of met een annotatie anders dan een link gaat niet door.
+# Twee lagen, want één parser kan anders lezen dan poppler (review B3b MOET 3):
+#  1. pypdf (strikt; per object soepel als strikt struikelt): elke /Annots op elke pagina moet bewezen een /Link zijn;
+#     geen /AcroForm met velden, geen veld (/FT), geen ingesloten bestanden, niet versleuteld; elk object uit de xref
+#     (ook uit objectstromen) wordt nagelopen.
+#  2. een ruwe scan van de bytes plus elke objectstroom (ook zonder /Type, ook met een filterketen van Flate): PDF-
+#     witruimte (NUL), commentaar tussen naam en waarde, #xx-namen en een indirecte /Subtype worden meegenomen.
+# Wat een mens in de viewer ziet maar niet op de pagina staat (titel, onderwerp, trefwoorden, bladwijzers, XMP, de
+# omschrijving van een link) gaat als extra tekst mee naar Qwen.
 PDF_ANNOT_SOORTEN = frozenset({
     "Text", "FreeText", "Line", "Square", "Circle", "Polygon", "PolyLine", "Highlight", "Underline", "Squiggly",
     "StrikeOut", "Stamp", "Caret", "Ink", "Popup", "FileAttachment", "Sound", "Movie", "Widget", "Screen",
     "PrinterMark", "TrapNet", "Watermark", "3D", "Redact", "RichMedia", "Projection"})
-_PDF_STROOM = re.compile(rb"\bobj\b(.{0,4096}?)\bstream\r?\n", re.S)
+_PDF_WIT = rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*[\r\n])*"
 _PDF_NAAM_HEX = re.compile(rb"#([0-9A-Fa-f]{2})")
+_PDF_STROOM = re.compile(rb"\bstream\r?\n")
 
 
 def _pdf_naam_normaal(b):
@@ -109,41 +116,155 @@ def _pdf_naam_normaal(b):
     return _PDF_NAAM_HEX.sub(lambda m: bytes([int(m.group(1), 16)]), b)
 
 
-def pdf_structuur(b):
-    """Geeft None als er geen formulier/opmerking/versleuteling te vinden is, anders een redencode."""
-    delen = [b]
-    totaal = 0
+def _pdf_ruwe_scan(b):
+    """Laag 2. Geeft None of een redencode."""
+    delen, totaal = [b], 0
     for m in _PDF_STROOM.finditer(b):
-        kop = _pdf_naam_normaal(m.group(1))
-        if b"/ObjStm" not in kop:
-            continue   # alleen objectstromen dragen objecten (annotaties, formulier); paginastromen niet
+        begin = b.rfind(b"obj", 0, m.start())
+        kop = _pdf_naam_normaal(b[begin if begin >= 0 else 0:m.start()])
+        objstroom = re.search(rb"/ObjStm\b", kop) or (re.search(rb"/N\b", kop) and re.search(rb"/First\b", kop))
+        if not objstroom:
+            continue   # paginastromen, beelden, lettertypen: geen objecten
         eind = b.find(b"endstream", m.end())
-        if eind < 0 or b"/DecodeParms" in kop or b"/FlateDecode" not in kop or re.search(rb"/(ASCII|LZW|RunLength|Crypt)", kop):
+        if eind < 0:
             return "pdf_structuur_onleesbaar"
-        try:
-            d = zlib.decompressobj()
-            uit = d.decompress(b[m.end():eind], MAX_PDF_STROMEN - totaal)
-        except zlib.error:
+        f = re.search(rb"/Filter" + _PDF_WIT + rb"(\[[^\]]*\]|/[A-Za-z0-9]+)", kop)
+        filters = re.findall(rb"/([A-Za-z0-9]+)", f.group(1)) if f else []
+        if any(x not in (b"FlateDecode", b"Fl") for x in filters):
             return "pdf_structuur_onleesbaar"
-        if d.unconsumed_tail:
+        if re.search(rb"/Predictor" + _PDF_WIT + rb"(\d+)", kop) and not re.search(rb"/Predictor" + _PDF_WIT + rb"1\b", kop):
+            return "pdf_structuur_onleesbaar"
+        data = b[m.end():eind]
+        for _ in filters:
+            rest = MAX_PDF_STROMEN - totaal
+            if rest <= 0:
+                return "pdf_structuur_te_groot"
+            try:
+                d = zlib.decompressobj()
+                data = d.decompress(data, rest)
+            except zlib.error:
+                return "pdf_structuur_onleesbaar"
+            if d.unconsumed_tail:
+                return "pdf_structuur_te_groot"
+        totaal += len(data)
+        if totaal > MAX_PDF_STROMEN:
             return "pdf_structuur_te_groot"
-        totaal += len(uit)
-        delen.append(uit)
+        delen.append(data)
     alles = _pdf_naam_normaal(b"\n".join(delen))
     if re.search(rb"/Encrypt\b", alles):
         return "pdf_versleuteld"
-    if re.search(rb"/AcroForm\b", alles) or re.search(rb"/XFA\b", alles):
-        return "pdf_formulier"
-    for s in re.findall(rb"/Subtype\s*/([A-Za-z0-9]+)", alles):
+    if re.search(rb"/(XFA|FT)\b", alles):
+        return "pdf_formulier"   # een veld heeft altijd /FT (zelf of via de ouder); een leeg /AcroForm beoordeelt pypdf
+    if re.search(rb"/(EmbeddedFiles|EmbeddedFile|RichMediaContent)\b", alles):
+        return "pdf_ingesloten_bestanden"
+    if re.search(rb"/Subtype" + _PDF_WIT + rb"\d+" + _PDF_WIT + rb"\d+" + _PDF_WIT + rb"R\b", alles):
+        return "pdf_structuur_vreemd"   # een indirecte /Subtype is geldig maar ongebruikelijk: niet gokken
+    for s in re.findall(rb"/Subtype" + _PDF_WIT + rb"/([A-Za-z0-9]+)", alles):
         if s.decode("latin-1") in PDF_ANNOT_SOORTEN:
             return "pdf_opmerkingen"
     return None
 
 
-def _pdf(b):
-    fout = pdf_structuur(b)
+def _pdf_tekst(w):
+    try:
+        return str(w).strip()
+    except Exception:
+        return ""
+
+
+def _pdf_pypdf(b):
+    """Laag 1. Geeft (redencode of None, extra tekst)."""
+    from pypdf import PdfReader
+    from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject
+    try:
+        r = PdfReader(io.BytesIO(b), strict=True)
+        if r.is_encrypted:
+            return "pdf_versleuteld", ""
+        root = r.trailer["/Root"].get_object()
+        if "/AcroForm" in root:
+            af = root["/AcroForm"].get_object()
+            velden = af.get("/Fields") if isinstance(af, DictionaryObject) else None
+            velden = velden.get_object() if velden is not None else None
+            # gemeten 28-10: veel gewone pdf's dragen een leeg /AcroForm; alleen met velden of XFA is het een formulier
+            if not isinstance(af, DictionaryObject) or "/XFA" in af or (velden is not None and not isinstance(velden, ArrayObject)) \
+                    or (velden is not None and len(velden) > 0):
+                return "pdf_formulier", ""
+        namen = root.get("/Names")
+        if namen is not None and "/EmbeddedFiles" in namen.get_object():
+            return "pdf_ingesloten_bestanden", ""
+        extra = []
+        for pagina in r.pages:
+            annots = pagina.get("/Annots")
+            if annots is None:
+                continue
+            annots = annots.get_object()
+            if not isinstance(annots, ArrayObject):
+                return "pdf_structuur_vreemd", ""
+            for a in annots:
+                a = a.get_object()
+                if not isinstance(a, DictionaryObject) or isinstance(a.get("/Subtype"), IndirectObject) \
+                        or a.get("/Subtype") != NameObject("/Link"):
+                    return "pdf_opmerkingen", ""
+                if a.get("/Contents"):
+                    extra.append(_pdf_tekst(a["/Contents"]))
+        # elk object in de xref (ook ongebruikte en die in objectstromen)
+        nummers = {(n, 0) for n in r.xref_objStm}
+        for gen, tabel in r.xref.items():
+            nummers.update((n, gen) for n in tabel)
+        los = None
+        for num, gen in sorted(nummers):
+            try:
+                o = r.get_object(IndirectObject(num, gen, r))
+            except Exception:
+                # gemeten 28-10 op gewone pdf's: een vrij xref-item of een dubbele /Length laat de strikte lezer
+                # struikelen; dan het object nog eens soepel lezen en dát beoordelen (niet te lezen = weigeren)
+                try:
+                    los = los or PdfReader(io.BytesIO(b), strict=False)
+                    o = los.get_object(IndirectObject(num, gen, los))
+                except Exception:
+                    return "pdf_structuur_onleesbaar", ""
+            if isinstance(o, DictionaryObject):
+                sub = o.get("/Subtype")
+                if isinstance(sub, IndirectObject) or "/FT" in o:
+                    return "pdf_formulier" if "/FT" in o else "pdf_structuur_vreemd", ""
+                if (o.get("/Type") == NameObject("/Annot") or (isinstance(sub, str) and sub.lstrip("/") in PDF_ANNOT_SOORTEN)) \
+                        and sub != NameObject("/Link"):
+                    return "pdf_opmerkingen", ""
+        info = r.metadata or {}
+        for k in ("/Title", "/Subject", "/Keywords", "/Author"):
+            if info.get(k):
+                extra.append(_pdf_tekst(info[k]))
+
+        def bladwijzers(lijst):
+            for x in lijst:
+                if isinstance(x, list):
+                    bladwijzers(x)
+                else:
+                    extra.append(_pdf_tekst(x.get("/Title", "")))
+        bladwijzers(r.outline or [])
+        meta = root.get("/Metadata")
+        if meta is not None:
+            t = _xml_tekst(meta.get_object().get_data(), {})
+            if t is None:
+                return "pdf_structuur_vreemd", ""
+            extra.append(t)
+        return None, "\n".join(x for x in extra if x)
+    except Exception:
+        return "pdf_structuur_onleesbaar", ""
+
+
+def pdf_structuur(b):
+    """Geeft (None | redencode, extra tekst voor Qwen)."""
+    fout = _pdf_ruwe_scan(b)
     if fout:
-        return None, fout
+        return fout, ""
+    return _pdf_pypdf(b)
+
+
+def _pdf(b):
+    fout, extra = pdf_structuur(b)
+    if fout:
+        return None, fout, ""
     I.WERK.mkdir(parents=True, exist_ok=True, mode=0o700)
     pad = I.WERK / f"b-{secrets.token_hex(8)}.pdf"
     fd = os.open(pad, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -152,31 +273,31 @@ def _pdf(b):
             f.write(b)
         info = subprocess.run(["pdfinfo", str(pad)], capture_output=True, timeout=60)
         if info.returncode != 0:
-            return None, "pdf_onleesbaar"
+            return None, "pdf_onleesbaar", ""
         vorm = re.search(r"^Form:\s*(\S+)", info.stdout.decode("utf-8", "replace"), re.M)
-        if not vorm or vorm.group(1).lower() != "none":
-            return None, "pdf_formulier"
+        if not vorm or vorm.group(1).lower() not in ("none", "acroform"):
+            return None, "pdf_formulier", ""   # XFA of onbekend; een AcroForm met velden weigert pdf_structuur al
         r = subprocess.run(["pdftotext", "-q", "-enc", "UTF-8", "-layout", str(pad), "-"], capture_output=True,
                            timeout=60)
         if r.returncode != 0:
-            return None, "pdf_onleesbaar"
+            return None, "pdf_onleesbaar", ""
         tekst = r.stdout.decode("utf-8", "replace")
         beelden = subprocess.run(["pdfimages", "-list", str(pad)], capture_output=True, timeout=60)
         if beelden.returncode != 0:
-            return None, "pdf_beelden_onbekend"
+            return None, "pdf_beelden_onbekend", ""
         for regel in beelden.stdout.decode("utf-8", "replace").splitlines()[2:]:
             kol = regel.split()
             if len(kol) > 4 and kol[3].isdigit() and kol[4].isdigit():
                 breed, hoog = int(kol[3]), int(kol[4])
                 if min(breed, hoog) >= BEELD_MIN_ZIJDE or breed * hoog >= BEELD_MAX_OPPERVLAK:
-                    return None, "pdf_scanbeeld"
+                    return None, "pdf_scanbeeld", ""
         bijlagen_in_pdf = subprocess.run(["pdfdetach", "-list", str(pad)], capture_output=True, timeout=60)
         if bijlagen_in_pdf.returncode != 0:
-            return None, "pdf_ingesloten_onbekend"
+            return None, "pdf_ingesloten_onbekend", ""
         eerste = (bijlagen_in_pdf.stdout.decode("utf-8", "replace").splitlines() or ["0"])[0]
         if not eerste.strip().startswith("0 "):
-            return None, "pdf_ingesloten_bestanden"
-        return tekst, None
+            return None, "pdf_ingesloten_bestanden", ""
+        return tekst, None, extra
     finally:
         try:
             os.unlink(pad)
@@ -227,10 +348,32 @@ OFFICE_DELEN = {
         "beeld": (r"xl/media/[^/]+",),
     },
 }
-# Attributen met tekst die een mens schreef (bladnaam, alt-tekst, auteur, namen in tabellen en personenlijsten).
-_TEKST_ATTR = re.compile(r'\s(?:[A-Za-z0-9]+:)?(name|descr|title|author|displayName|userId|initials)="([^"]*)"')
+# Attributen: ALLE waarden gaan mee (review B3b ZOU 4: tooltip, fldSimple-instr, watermerk-textpath, docVar,
+# gegevensvalidatie, listItem-displayText, alt-tekst met enkele aanhalingstekens …), ontdubbeld per bestand zodat de
+# vele opmaakwaarden (left, Calibri, Heading1) maar één keer tellen. Weg: namespaces, getallen/hex/ja-nee en
+# schema-adressen.
+_ATTR = re.compile(r"""\s([A-Za-z_][\w.-]*(?::[\w.-]+)?)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_ATTR_TECHNISCH = re.compile(
+    r"^(?:-?[0-9a-fA-F.]+%?|true|false|on|off|none|auto|[A-Za-z]{1,2}|\{?[0-9A-Fa-f-]{8,}\}?|"
+    r"\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?(?:\s+\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)*|"
+    r"https?://(?:schemas\.(?:openxmlformats\.org|microsoft\.com)|purl\.org|www\.w3\.org)/\S*|"
+    r"urn:schemas-microsoft-com:\S*|application/[\w.+-]+|image/[\w.+-]+|/[\w./\[\]-]+\.(?:xml|rels|vml|bin|png|jpe?g|gif|emf|wmf))$", re.I)
+# Zuiver structurele attributen (celverwijzing, inhoudstype, opmaak) en de vaste lijst ingebouwde stijlnamen.
+_ATTR_WEG = frozenset({"r", "ref", "sqref", "spans", "ContentType", "PartName", "Extension", "Ignorable", "space",
+                       "encoding", "typeface", "script", "styleId", "patternType", "horizontal", "vertical", "state",
+                       "t", "s", "cap", "Id", "id", "rsidR", "rsidRPr", "rsidRDefault", "rsidP", "rsidTr", "rsidSect",
+                       "rsidDel", "paraId", "textId", "ascii", "hAnsi", "eastAsia", "cs", "panose", "pitch", "family",
+                       "charset", "sig", "usb0", "usb1", "usb2", "usb3", "csb0", "csb1", "uiPriority", "fill", "color",
+                       "themeColor", "rgb", "theme", "tint", "formatCode", "numFmtId", "fontId", "fillId", "borderId",
+                       "xfId", "applyFont", "applyFill", "applyBorder", "applyAlignment", "applyNumberFormat"})
+_ELEM_WEG = frozenset({"lsdException", "latentStyles", "font", "sig", "panose1", "altName", "family", "charset",
+                       "pitch", "Default", "Override"})
 _BLOK_EINDE = re.compile(r"</(?:[A-Za-z0-9]+:)?(p|tr|row|si|comment|threadedComment|txbxContent|ser|pt|definedName)>")
 _CEL_EINDE = re.compile(r"</(?:[A-Za-z0-9]+:)?(tc|c|tab|cfRule)>|<(?:[A-Za-z0-9]+:)?(tab|br|cr)\s*/>")
+# Relaties die inhoud binnenhalen die de tekstextractie niet dekt (review B3b MOET 2): altijd weigeren.
+_REL_WEIGER = re.compile(r'Type\s*=\s*["\'][^"\']*/(aFChunk|oleObject|package|subDocument|frame|control|externalLink|'
+                         r'externalLinkPath|pivotCacheDefinition|pivotTable|connections|queryTable|vbaProject|'
+                         r'customXml|activeXControlBinary|slicer|slicerCache|timeline)["\']', re.I)
 
 
 def _deel_soort(naam, soort):
@@ -243,8 +386,9 @@ def _deel_soort(naam, soort):
     return "weiger", "office_onbekend_deel"
 
 
-def _xml_tekst(ruw):
-    """Alle tekstknopen (en tekstattributen) van één XML-deel, in volgorde. None = niet te lezen."""
+def _xml_tekst(ruw, kenmerken):
+    """Alle tekstknopen van één XML-deel, in volgorde; attribuutwaarden gaan (ontdubbeld) in `kenmerken`.
+    None = niet te lezen (DOCTYPE/ENTITY)."""
     if ruw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         xml = ruw.decode("utf-16", "replace")
     else:
@@ -260,19 +404,45 @@ def _xml_tekst(ruw):
     for m in re.finditer(r"<[^>]*>|[^<]+", xml):
         stuk = m.group(0)
         if stuk.startswith("<"):
-            delen.extend(" " + html.unescape(w) + " " for _, w in _TEKST_ATTR.findall(stuk) if w.strip())
+            el = re.match(r"</?\s*(?:[\w.-]+:)?([\w.-]+)", stuk)
+            if el and el.group(1) in _ELEM_WEG:
+                continue
+            for naam, w1, w2 in _ATTR.findall(stuk):
+                w = html.unescape(w1 or w2).strip()
+                kort = naam.split(":")[-1]
+                if naam.lower().startswith("xmlns") or kort in _ATTR_WEG or not w or _ATTR_TECHNISCH.match(w):
+                    continue
+                kenmerken.setdefault(w, None)
         else:
             delen.append(html.unescape(stuk))
     return "".join(delen)
 
 
-def _rels_extern(ruw):
-    """Externe doelen in een .rels (hyperlinks, ook mailto:) en of er een altChunk aan hangt."""
-    xml = ruw.decode("utf-8", "replace")
-    altchunk = bool(re.search(r'Type="[^"]*/aFChunk"', xml, re.I))
-    doelen = [html.unescape(m.group(1)) for m in re.finditer(r'<Relationship\b[^>]*?Target="([^"]*)"[^>]*TargetMode="External"', xml)]
-    doelen += [html.unescape(m.group(1)) for m in re.finditer(r'<Relationship\b[^>]*?TargetMode="External"[^>]*Target="([^"]*)"', xml)]
-    return altchunk, doelen
+def _is_xml(ruw):
+    kop = ruw[:64].lstrip(b"\xef\xbb\xbf\xff\xfe\x00 \t\r\n")
+    return kop.startswith(b"<")
+
+
+def _beeld_maat(b):
+    """(breed, hoog) van png/jpeg/gif uit de kop; None = geen van die drie of onleesbaar (dan weigeren)."""
+    if b[:8] == b"\x89PNG\r\n\x1a\n" and len(b) >= 24 and b[12:16] == b"IHDR":
+        return int.from_bytes(b[16:20], "big"), int.from_bytes(b[20:24], "big")
+    if b[:6] in (b"GIF87a", b"GIF89a") and len(b) >= 10:
+        return int.from_bytes(b[6:8], "little"), int.from_bytes(b[8:10], "little")
+    if b[:3] == b"\xff\xd8\xff":
+        i = 2
+        while i + 9 < len(b):
+            if b[i] != 0xFF:
+                return None
+            soort = b[i + 1]
+            if soort in (0xD8, 0x01) or 0xD0 <= soort <= 0xD7:
+                i += 2
+                continue
+            lengte = int.from_bytes(b[i + 2:i + 4], "big")
+            if 0xC0 <= soort <= 0xCF and soort not in (0xC4, 0xC8, 0xCC):
+                return int.from_bytes(b[i + 7:i + 9], "big"), int.from_bytes(b[i + 5:i + 7], "big")
+            i += 2 + lengte
+    return None
 
 
 def _office(b, soort):
@@ -280,6 +450,8 @@ def _office(b, soort):
         infos = z.infolist()
         if len(infos) > MAX_OFFICE_DELEN or sum(i.file_size for i in infos) > MAX_OFFICE_TOTAAL:
             return None, "office_te_groot"
+        if len({i.filename.lower() for i in infos}) != len(infos):
+            return None, "office_dubbele_delen"   # zipfile leest het laatste exemplaar; Word misschien het eerste
         rollen = {}
         for info in infos:
             if info.is_dir():
@@ -291,33 +463,51 @@ def _office(b, soort):
             rol, reden = _deel_soort(info.filename, soort)
             if rol == "weiger":
                 return None, reden
-            if rol == "beeld" or info.filename.startswith("docProps/thumbnail"):
-                if info.file_size > MAX_MEDIA_BYTES:
-                    return None, "office_foto"
+            if info.filename.startswith("docProps/thumbnail"):
+                rol = "beeld"
             rollen[info.filename] = rol
         if "[Content_Types].xml" not in rollen:
             return None, "office_onleesbaar_deel"
         if re.search(r"macroEnabled|vbaProject", z.read("[Content_Types].xml").decode("utf-8", "replace"), re.I):
             return None, "office_macro"
+        # Beeld: alleen png/jpeg/gif (op inhoud), klein (review B3b MOET 1: een emf/svg/wmf kan tekst dragen, bv. een
+        # als plaatje geplakte tabel; die tekst ziet Qwen niet).
+        for n, r in rollen.items():
+            if r != "beeld":
+                continue
+            if z.getinfo(n).file_size > MAX_MEDIA_BYTES:
+                return None, "office_foto"
+            maat = _beeld_maat(z.read(n))
+            if maat is None:
+                return None, "office_beeld_vreemd"
+            if min(maat) >= BEELD_MIN_ZIJDE or maat[0] * maat[1] >= BEELD_MAX_OPPERVLAK:
+                return None, "office_foto"
+        # Tekst uit ELK XML-deel, ook de vormdelen (review B3b MOET 2: welk deel Word als hoofddocument of koptekst
+        # gebruikt, bepalen _rels en [Content_Types], niet de naam; zo ziet Qwen alles wat Word zou kunnen tonen).
         hoofd = "word/document.xml" if soort == "docx" else "xl/workbook.xml"
-        volgorde = [hoofd] + sorted(n for n, r in rollen.items() if r == "tekst" and n != hoofd)
         if soort == "xlsx":
-            # bladen in nummervolgorde direct na de werkmap, dan de gedeelde teksten
-            bladen = sorted((n for n in volgorde if n.startswith("xl/worksheets/")), key=lambda n: int(re.sub(r"\D", "", n) or 0))
-            rest = [n for n in volgorde if n != hoofd and n not in bladen]
-            volgorde = [hoofd] + bladen + rest
-        delen = []
+            bladen = sorted((n for n in rollen if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n)),
+                            key=lambda n: int(re.sub(r"\D", "", n) or 0))
+        else:
+            bladen = []
+        eerst = [hoofd] + bladen
+        volgorde = eerst + sorted(n for n, r in rollen.items() if r == "tekst" and n not in eerst) \
+            + sorted(n for n, r in rollen.items() if r == "vorm" and n not in eerst)
+        delen, kenmerken = [], {}
         for n in volgorde:
-            t = _xml_tekst(z.read(n))
+            ruw = z.read(n)
+            if n.endswith(".rels"):
+                xml = ruw.decode("utf-8", "replace")
+                if _REL_WEIGER.search(xml):
+                    return None, "office_relatie_niet_toegestaan"
+            if not (_is_xml(ruw) or n.endswith((".xml", ".rels", ".vml"))):
+                continue   # binaire vormdelen (printerinstellingen, lettertypen): geen tekst
+            t = _xml_tekst(ruw, kenmerken)
             if t is None:
                 return None, "office_onleesbaar_deel"
             delen.append(t)
-        for n, r in rollen.items():
-            if n.endswith(".rels"):
-                altchunk, doelen = _rels_extern(z.read(n))
-                if altchunk:
-                    return None, "office_altchunk"
-                delen.extend(doelen)
+        if kenmerken:
+            delen.append("[kenmerken] " + " | ".join(kenmerken))
         tekst = "\n".join(re.sub(r"[ \t]{2,}", " ", d).strip() for d in delen if d and d.strip())
         return tekst, None
 
@@ -335,7 +525,7 @@ def beoordeel(naam, inhoud):
         return _weiger("formaat_niet_toegestaan", soort)
     try:
         if soort == "pdf":
-            tekst, fout = _pdf(bytes(inhoud))
+            tekst, fout, extra = _pdf(bytes(inhoud))
             if fout:
                 return _weiger(fout, soort)
             paginas = tekst.split("\f")
@@ -346,6 +536,8 @@ def beoordeel(naam, inhoud):
             lengtes = [len(re.sub(r"\s+", "", p)) for p in paginas]
             if min(lengtes) < MIN_PER_PAGINA or sum(lengtes) / len(lengtes) < MIN_GEMIDDELD_PER_PAGINA:
                 return _weiger("pdf_geen_tekstlaag", soort)
+            if extra:
+                tekst = tekst + "\n" + extra   # na de paginatoets: titel, bladwijzers, XMP, linkomschrijving
         else:
             tekst, fout = _office(bytes(inhoud), soort)
             if fout:

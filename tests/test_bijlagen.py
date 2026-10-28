@@ -2,7 +2,7 @@ import io
 import zipfile
 
 from meeleespod import bijlagen
-from meeleespod.toetsdata import pdf_met_tekst, pdf_met_tekst_en_beeld, pdf_zonder_tekst
+from meeleespod.toetsdata import pdf_met_tekst, pdf_met_tekst_en_beeld, pdf_zonder_tekst, png_kop
 
 
 def _docx(tekst, foto=0):
@@ -11,7 +11,7 @@ def _docx(tekst, foto=0):
         z.writestr("[Content_Types].xml", "<Types/>")
         z.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>" + tekst + "</w:t></w:r></w:p></w:body></w:document>")
         if foto:
-            z.writestr("word/media/image1.jpeg", b"\xff\xd8\xff" + b"\x01" * foto)
+            z.writestr("word/media/image1.png", png_kop(120, 40, foto))
     return b.getvalue()
 
 

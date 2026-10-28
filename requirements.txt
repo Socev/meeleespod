@@ -1,4 +1,4 @@
-# Alleen voor de Parro-lezer en de beleidtoets (Python-Playwright, zelfde versie als de Chromium in het basisimage).
+# Python-Playwright alleen voor de Parro-lezer en de beleidtoets (zelfde versie als de Chromium in het basisimage).
 # Vast op versie + sha256 (pip --require-hashes); alleen de wheels voor linux x86_64 / cp312.
 playwright==1.64.1 \
     --hash=sha256:577b8d88778c245cfbd145ae17cf53044f084b1b46c55c69081d4069d56057e2
@@ -8,3 +8,6 @@ pyee==14.0.0 \
     --hash=sha256:3ac2d3229a9677f7de2c33d7f52fe25b638a46b19c413fea2edc8c6d0a644e4d
 typing-extensions==4.16.0 \
     --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+# Bijlagenpad (wv1751): pdf-structuur (annotaties, formulier) met een echte parser naast de ruwe scan. Pure Python.
+pypdf==6.21.3 \
+    --hash=sha256:c8ca4d9a360dbd5d4b9bb7a8389e2a9ae6a106bee722b496f918040ba2daa17e

@@ -105,15 +105,15 @@ def test_herkansing_na_503_en_opgeven_na_drie(monkeypatch):
     assert uit["herkansing"] == 1 and uit["wachtrij"] == 1 and uit["geweigerd"] == 0
     assert set(rij[0]) == {"mail_id", "thread_id", "v2id", "bijlage_id", "pogingen", "sinds"}, "alleen ids, geen inhoud"
     assert "offerte" not in json.dumps(rij), "geen naam in de wachtrij"
-    # de mail zelf is al gezien: volgende rondes sturen alleen de herkansing
-    for ronde in range(1, 4):
+    # de mail zelf is al gezien: volgende rondes sturen alleen de herkansing (review B3b ZOU 6: precies 3)
+    for ronde in range(1, 3):
         uit = outlook.ronde("live")
         assert uit["herkansing"] == 1 and uit["opgegeven"] == 0, ronde
     uit = outlook.ronde("live")
     assert uit["opgegeven"] == 1 and uit["wachtrij"] == 0
-    assert stand["n"] == 5, "eerste poging + 3 herkansingen + laatste die opgeeft"
+    assert stand["n"] == 4, "eerste poging + precies 3 herkansingen"
     uit = outlook.ronde("live")
-    assert stand["n"] == 5, "na opgeven niet meer"
+    assert stand["n"] == 4, "na opgeven niet meer"
 
 
 def test_herkansing_slaagt_bij_volgende_ronde(monkeypatch):
@@ -131,11 +131,68 @@ def test_herkansing_slaagt_bij_volgende_ronde(monkeypatch):
 
 
 def test_weigering_4xx_wordt_niet_herkanst(monkeypatch):
-    def verboden(p):
-        raise vangnet.HttpFout(403, "n8n.huisdokter.dev")
-    _opzet(monkeypatch, {"m0@voorbeeld.nl": {"klasse": "zakelijk"}}, verboden)
+    def fout(p):
+        raise vangnet.HttpFout(400, "n8n.huisdokter.dev")
+    _opzet(monkeypatch, {"m0@voorbeeld.nl": {"klasse": "zakelijk"}}, fout)
     uit = outlook.ronde("live")
     assert uit["geweigerd"] == 1 and uit["wachtrij"] == 0
+
+
+def test_sleutelfout_pauzeert_de_ronde_zonder_poging_te_tellen(monkeypatch):
+    """Review B3b ZOU 8: 403 (sleutel) raakt elke bijlage → wachtrij, rest van de ronde zonder netwerk."""
+    stand = {"n": 0, "sleutel_goed": False}
+
+    def antwoord(p):
+        stand["n"] += 1
+        if not stand["sleutel_goed"]:
+            raise vangnet.HttpFout(403, "n8n.huisdokter.dev")
+        return {"ok": True, "door": True, "stuk_id": "s"}
+    gestuurd, opgehaald = _opzet(monkeypatch, {"m0@voorbeeld.nl": {"klasse": "zakelijk"},
+                                               "m1@voorbeeld.nl": {"klasse": "zakelijk"}}, antwoord)
+    uit = outlook.ronde("live")
+    assert stand["n"] == 1 and uit["herkansing"] == 2 and uit["wachtrij"] == 2, "tweede bijlage zonder netwerk naar de wachtrij"
+    assert len(opgehaald) == 1
+    for _ in range(4):
+        outlook.ronde("live")
+    assert all(x["pogingen"] == 1 for x in staat.lees("bijlage_wachtrij")["rij"]), "sleutelfout telt niet als poging"
+    stand["sleutel_goed"] = True
+    uit = outlook.ronde("live")
+    assert uit["doorgelaten"] == 2 and uit["wachtrij"] == 0
+
+
+def test_geen_sleutel_pauzeert(monkeypatch):
+    def geen(p):
+        raise RuntimeError("geen webhooksleutel")
+    _opzet(monkeypatch, {"m0@voorbeeld.nl": {"klasse": "zakelijk"}}, geen)
+    uit = outlook.ronde("live")
+    assert uit["herkansing"] == 1 and uit["geweigerd"] == 0
+
+
+def test_bijlage_post_telt_niet_als_contact(monkeypatch):
+    gestuurd, _ = _opzet(monkeypatch, {"m0@voorbeeld.nl": {"klasse": "zakelijk"}}, lambda p: {"ok": True, "door": True})
+    contact = []
+    echte = webhook.post
+
+    def kijk(doel, payload, timeout=0, contact=True):
+        if doel == "outlook-bijlage":
+            assert contact is False
+            kijk.n += 1
+        return echte(doel, payload, timeout=timeout, contact=contact)
+    kijk.n = 0
+    monkeypatch.setattr(webhook, "post", kijk)
+    outlook.ronde("live")
+    assert kijk.n == 1
+
+
+def test_volle_wachtrij_telt_als_opgegeven(monkeypatch):
+    def storing(p):
+        raise vangnet.HttpFout(503, "n8n.huisdokter.dev")
+    _opzet(monkeypatch, {"m0@voorbeeld.nl": {"klasse": "zakelijk"}}, storing)
+    staat.schrijf("bijlage_wachtrij", {"rij": [{"mail_id": f"x{i}", "thread_id": "", "v2id": "v", "bijlage_id": "b",
+                                                 "pogingen": 1, "sinds": "x"} for i in range(outlook.WACHTRIJ_MAX)]})
+    monkeypatch.setattr(outlook, "HERKANS_PER_RONDE", 0)
+    uit = outlook.ronde("live")
+    assert uit["opgegeven"] == 1 and uit["herkansing"] == 0
 
 
 def test_herkansing_vervalt_als_oordeel_weg_is(monkeypatch):

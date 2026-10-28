@@ -100,3 +100,23 @@ def pdf_met_objectstroom(binnen, filter_=b"/FlateDecode", parms=b""):
     return (b"%PDF-1.5\n1 0 obj\n<< /Type /Catalog >>\nendobj\n7 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Filter "
             + filter_ + parms + b" /Length " + str(len(data)).encode() + b" >>\nstream\n" + data
             + b"\nendstream\nendobj\n%%EOF\n")
+
+
+def png_kop(breed, hoog, grootte=0):
+    """Alleen een geldige PNG-kop (IHDR) met de opgegeven maat, aangevuld tot `grootte` bytes; voor de maattoets."""
+    import struct
+    ihdr = struct.pack(">IIBBBBB", breed, hoog, 8, 0, 0, 0, 0)
+    kop = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    return kop + b"\x00" * max(0, grootte - len(kop))
+
+
+def pdf_met_annot_ruw(annot, extra=(), info=b""):
+    """Tekstpagina met een zelf opgegeven annotatie-object (6 0 obj) en eventueel extra objecten (7, 8, ...)."""
+    return _pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /Annots [6 0 R] >>",
+        _stroom(_tekstpagina()),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        annot,
+    ] + list(extra)).replace(b"/Root 1 0 R", b"/Root 1 0 R" + info)

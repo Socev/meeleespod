@@ -5,7 +5,7 @@ import zipfile
 import pytest
 
 from meeleespod import bijlagen
-from meeleespod.toetsdata import pdf_met_annotatie, pdf_met_objectstroom, pdf_met_tekst
+from meeleespod.toetsdata import pdf_met_annot_ruw, pdf_met_annotatie, pdf_met_objectstroom, pdf_met_tekst, png_kop
 
 TEKST = "Notulen werkoverleg over het rooster van de balie. " * 10
 CT = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'
@@ -82,7 +82,7 @@ def test_docx_onbekende_of_verborgen_delen_geweigerd(naam, reden):
 
 def test_docx_altchunk_via_relatie_en_macro_via_inhoudstype():
     rels = '<Relationships><Relationship Id="r9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="chunk.htm"/></Relationships>'
-    assert bijlagen.beoordeel("n.docx", _docx({"word/_rels/document.xml.rels": rels}))["reden"] == "office_altchunk"
+    assert bijlagen.beoordeel("n.docx", _docx({"word/_rels/document.xml.rels": rels}))["reden"] == "office_relatie_niet_toegestaan"
     ct = CT.replace("</Types>", '<Override PartName="/word/document.xml" ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/></Types>')
     assert bijlagen.beoordeel("n.docm", _docx(ct=ct))["reden"] == "office_macro"
 
@@ -144,21 +144,71 @@ def test_pdf_formulier_en_notitie_geweigerd():
         assert r["door"] is False and r["reden"] == "pdf_opmerkingen", soort
 
 
+def _pdf_met_catalogus(extra):
+    from meeleespod.toetsdata import _pdf, _stroom, _tekstpagina
+    return _pdf([b"<< /Type /Catalog /Pages 2 0 R " + extra + b" >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                 b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+                 _stroom(_tekstpagina()), b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"])
+
+
+def test_pdf_leeg_acroform_mag_met_velden_niet():
+    r = bijlagen.beoordeel("leeg.pdf", _pdf_met_catalogus(b"/AcroForm << /Fields [] >>"))
+    assert r["door"] is True, ("gemeten: gewone pdf's dragen vaak een leeg AcroForm", r["reden"])
+    assert bijlagen.beoordeel("xfa.pdf", _pdf_met_catalogus(b"/AcroForm << /Fields [] /XFA 9 0 R >>"))["reden"] == "pdf_formulier"
+
+
 def test_pdf_alleen_link_mag():
     r = bijlagen.beoordeel("l.pdf", pdf_met_annotatie(b"Link"))
     assert r["door"] is True, r["reden"]
 
 
-def test_pdf_structuur_objectstroom_en_namen():
-    assert bijlagen.pdf_structuur(pdf_met_objectstroom(b"<< /Subtype /Text /Contents (x) >>")) == "pdf_opmerkingen"
-    assert bijlagen.pdf_structuur(pdf_met_objectstroom(b"<< /Sub#74ype /T#65xt >>")) == "pdf_opmerkingen", "#xx-namen"
-    assert bijlagen.pdf_structuur(pdf_met_objectstroom(b"<< /AcroForm << >> >>")) == "pdf_formulier"
-    assert bijlagen.pdf_structuur(pdf_met_objectstroom(b"<< /Subtype /Link >>")) is None
-    assert bijlagen.pdf_structuur(pdf_met_objectstroom(b"<< >>", b"/LZWDecode")) == "pdf_structuur_onleesbaar"
-    assert bijlagen.pdf_structuur(pdf_met_objectstroom(b"<< >>", parms=b" /DecodeParms << /Predictor 12 >>")) == "pdf_structuur_onleesbaar"
+def test_pdf_ruwe_scan_objectstroom_en_namen():
+    scan = bijlagen._pdf_ruwe_scan
+    assert scan(pdf_met_objectstroom(b"<< /Subtype /Text /Contents (x) >>")) == "pdf_opmerkingen"
+    assert scan(pdf_met_objectstroom(b"<< /Sub#74ype /T#65xt >>")) == "pdf_opmerkingen", "#xx-namen"
+    assert scan(pdf_met_objectstroom(b"<< /FT /Tx /T (veld) /V (verzonnen) >>")) == "pdf_formulier"
+    assert scan(pdf_met_objectstroom(b"<< /Subtype /Link >>")) is None
+    assert scan(pdf_met_objectstroom(b"<< >>", b"/LZWDecode")) == "pdf_structuur_onleesbaar"
+    assert scan(pdf_met_objectstroom(b"<< >>", parms=b" /DecodeParms << /Predictor 12 >>")) == "pdf_structuur_onleesbaar"
     kapot = pdf_met_objectstroom(b"<< >>").replace(b"stream\n", b"stream\nKAPOT", 1)
-    assert bijlagen.pdf_structuur(kapot) == "pdf_structuur_onleesbaar"
-    assert bijlagen.pdf_structuur(pdf_met_tekst().replace(b"/Root 1 0 R", b"/Root 1 0 R /Encrypt 9 0 R")) == "pdf_versleuteld"
+    assert scan(kapot) == "pdf_structuur_onleesbaar"
+    assert scan(pdf_met_tekst().replace(b"/Root 1 0 R", b"/Root 1 0 R /Encrypt 9 0 R")) == "pdf_versleuteld"
+    # review B3b: objectstroom zonder /Type, met dubbele Flate, met een kop > 4096 bytes
+    import zlib
+    binnen = b"<< /Subtype /Text /Contents (verzonnen) >>"
+    zonder_type = pdf_met_objectstroom(binnen).replace(b"/Type /ObjStm ", b"")
+    assert scan(zonder_type) == "pdf_opmerkingen"
+    dubbel = zlib.compress(zlib.compress(binnen))
+    p = (b"%PDF-1.5\n7 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Filter [/FlateDecode /FlateDecode] /Length "
+         + str(len(dubbel)).encode() + b" >>\nstream\n" + dubbel + b"\nendstream\nendobj\n")
+    assert scan(p) == "pdf_opmerkingen"
+    groot = pdf_met_objectstroom(binnen).replace(b"/N 1 ", b"/N 1 /Opvulling (" + b"x" * 5000 + b") ")
+    assert scan(groot) == "pdf_opmerkingen"
+
+
+def test_pdf_omzeilingen_uit_de_review():
+    """Review B3b MOET 3: NUL als witruimte, commentaar tussen naam en waarde, indirecte /Subtype."""
+    notitie = b" /Rect [50 500 70 520] /Contents (Verzonnen notitie) /P 3 0 R >>"
+    gevallen = {
+        "nul": pdf_met_annot_ruw(b"<< /Type /Annot /Subtype\x00/Text" + notitie),
+        "commentaar": pdf_met_annot_ruw(b"<< /Type /Annot /Subtype %x\n/Text" + notitie),
+        "indirect": pdf_met_annot_ruw(b"<< /Type /Annot /Subtype 7 0 R" + notitie, extra=[b"/Text"]),
+        "zonder_subtype": pdf_met_annot_ruw(b"<< /Type /Annot" + notitie),
+    }
+    for naam, pdf in gevallen.items():
+        r = bijlagen.beoordeel(naam + ".pdf", pdf)
+        assert r["door"] is False and r["reden"].startswith("pdf_"), (naam, r["reden"])
+
+
+def test_pdf_pypdf_laag_alleen_link_en_extra_tekst():
+    link = b"<< /Type /Annot /Subtype /Link /Rect [50 600 250 620] /Contents (LINKUITLEG-verzonnen) >>"
+    pdf = pdf_met_annot_ruw(link, extra=[b"<< /Title (PDFTITEL-verzonnen) /Subject (PDFONDERWERP) >>"], info=b" /Info 7 0 R")
+    r = bijlagen.beoordeel("l.pdf", pdf)
+    assert r["door"] is True, r["reden"]
+    assert "LINKUITLEG" in r["tekst"] and "PDFTITEL" in r["tekst"] and "PDFONDERWERP" in r["tekst"]
+    # een niet-link die alleen pypdf ziet (Subtype via een naam die de ruwe scan niet kent, bv. een eigen soort)
+    vreemd = pdf_met_annot_ruw(b"<< /Type /Annot /Subtype /EigenSoort /Rect [0 0 1 1] /Contents (x) >>")
+    assert bijlagen.beoordeel("v.pdf", vreemd)["reden"] == "pdf_opmerkingen"
 
 
 # ---- ZOU 3: grenzen gelijk aan n8n ----------------------------------------------------------------------------------------
@@ -173,3 +223,68 @@ def test_grenzen_gelijk_aan_n8n():
 def test_js_lengte_telt_zoals_n8n():
     assert bijlagen.js_lengte("  abc\x00  ") == 3
     assert bijlagen.js_lengte("\U0001F600") == 2, "buiten het BMP telt JavaScript twee eenheden"
+
+
+# ---- review B3b op deze diff ---------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("naam,inhoud,reden", [
+    ("word/media/image1.svg", b'<svg xmlns="http://www.w3.org/2000/svg"><text>VERBORGEN</text></svg>', "office_beeld_vreemd"),
+    ("word/media/image1.emf", b"\x01\x00\x00\x00" + b"\x00" * 40 + b" EMF" + "VERBORGEN".encode("utf-16-le"), "office_beeld_vreemd"),
+    ("word/media/image1.wmf", b"\xd7\xcd\xc6\x9a" + b"\x00" * 60, "office_beeld_vreemd"),
+    ("docProps/thumbnail.wmf", b"\xd7\xcd\xc6\x9a" + b"\x00" * 60, "office_beeld_vreemd"),
+    ("word/media/image1.png", png_kop(800, 600), "office_foto"),
+    ("word/media/image1.xml", b"<w:hdr><w:p><w:r><w:t>VERBORGEN</w:t></w:r></w:p></w:hdr>", "office_beeld_vreemd"),
+])
+def test_media_alleen_kleine_png_jpeg_gif(naam, inhoud, reden):
+    r = bijlagen.beoordeel("n.docx", _docx({naam: inhoud}))
+    assert r["door"] is False and r["reden"] == reden
+
+
+def test_klein_logo_mag():
+    r = bijlagen.beoordeel("n.docx", _docx({"word/media/image1.png": png_kop(200, 60, 4000)}))
+    assert r["door"] is True, r["reden"]
+
+
+def test_hoofddocument_via_rels_omgeleid_tekst_toch_mee():
+    """_rels/.rels kan elk deel als hoofddocument aanwijzen: daarom gaat de tekst van ALLE XML-delen mee."""
+    d = _docx({"_rels/.rels": '<Relationships><Relationship Id="r1" Type="x/officeDocument" Target="word/styles.xml"/></Relationships>',
+               "word/styles.xml": "<w:document><w:body><w:p><w:r><w:t>GEHEIM-IN-STIJLEN</w:t></w:r></w:p></w:body></w:document>",
+               "word/theme/theme1.xml": "<a:theme><a:t>GEHEIM-IN-THEMA</a:t></a:theme>"})
+    r = bijlagen.beoordeel("n.docx", d)
+    assert r["door"] is True and "GEHEIM-IN-STIJLEN" in r["tekst"] and "GEHEIM-IN-THEMA" in r["tekst"]
+
+
+def test_attributen_met_tekst_mee():
+    body = ("<w:p><w:hyperlink w:tooltip=\"TOOLTIP-verzonnen\"><w:r><w:t>link</w:t></w:r></w:hyperlink>"
+            "<w:fldSimple w:instr=\" DOCPROPERTY VELDINSTR-verzonnen \"/>"
+            "<v:shape><v:textpath string=\"WATERMERK-verzonnen\"/></v:shape>"
+            "<wp:docPr id='3' name='x' descr='ENKELQUOTE-verzonnen'/>"
+            "<w:sdt><w:dropDownList><w:listItem w:displayText=\"KEUZE-verzonnen\" w:value=\"k\"/></w:dropDownList></w:sdt></w:p>")
+    d = _docx({"word/settings.xml": '<w:settings><w:docVars><w:docVar w:name="v" w:val="DOCVAR-verzonnen tekst"/></w:docVars></w:settings>'},
+              extra_body=body)
+    r = bijlagen.beoordeel("n.docx", d)
+    assert r["door"] is True, r["reden"]
+    for woord in ("TOOLTIP", "VELDINSTR", "WATERMERK", "ENKELQUOTE", "KEUZE", "DOCVAR"):
+        assert woord in r["tekst"], woord
+    x = _xlsx({"xl/worksheets/sheet1.xml": "<worksheet><sheetData/><dataValidations><dataValidation sqref=\"A1\" "
+               "promptTitle=\"VALTITEL\" prompt=\"VALPROMPT-verzonnen\" error=\"VALFOUT-verzonnen\"/></dataValidations></worksheet>"})
+    r = bijlagen.beoordeel("r.xlsx", x)
+    assert r["door"] is True and all(w in r["tekst"] for w in ("VALTITEL", "VALPROMPT", "VALFOUT"))
+
+
+def test_opmaakwaarden_geen_ruis():
+    t = bijlagen.beoordeel("n.docx", _docx({"word/styles.xml": '<w:styles><w:latentStyles><w:lsdException w:name="heading 1"/>'
+                                            '</w:latentStyles><w:style w:styleId="Kop1"><w:rFonts w:ascii="Calibri"/></w:style></w:styles>'}))["tekst"]
+    assert "heading 1" not in t and "Calibri" not in t and "Kop1" not in t
+
+
+def test_dubbele_zipnaam_geweigerd():
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("[Content_Types].xml", CT)
+        z.writestr("word/document.xml", DOC.format(extra="<w:p><w:r><w:t>GEHEIM-EERSTE</w:t></w:r></w:p>"))
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            z.writestr("word/document.xml", DOC.format(extra=""))
+            z.writestr("Word/Document.xml", DOC.format(extra=""))
+    assert bijlagen.beoordeel("d.docx", b.getvalue())["reden"] == "office_dubbele_delen"

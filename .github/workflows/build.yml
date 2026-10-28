@@ -24,6 +24,8 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils >/dev/null
           pip install -q pytest==9.1.1
+          grep -A1 '^pypdf==' requirements.txt > /tmp/pypdf.txt
+          pip install -q --no-deps --require-hashes --only-binary=:all: -r /tmp/pypdf.txt
           python -m pytest -q tests
 
       - name: Vendor = nagelezen code (vaste commits, wv1435)
