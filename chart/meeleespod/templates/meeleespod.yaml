@@ -43,7 +43,7 @@ spec:
       containers:
         - name: meeleespod
           # CI-run 8 (commit 73c64c9: Teams-MCAS en-US + venster sluiten), rooktest groen; vast op digest
-          image: ghcr.io/socev/meeleespod:stabiel-8@sha256:b445c398d2ad4cfd1ce21295272ab17daac6eeadd1f19196a8881f9c20e217ad
+          image: ghcr.io/socev/meeleespod:stabiel-9@sha256:31f246d01da8c0152d631f77333bc700ffcf3f7f4445d91fb1870d78233e738b
           imagePullPolicy: IfNotPresent
           args: ["pod"]
           env:
@@ -53,7 +53,7 @@ spec:
             - {name: MEELEES_OUTLOOK, value: "aan"}
             - {name: MEELEES_TEAMS, value: "aan"}
             - {name: MEELEES_PARRO, value: "aan"}
-            - {name: MEELEES_BIJLAGEN, value: "uit"}   # aan pas na B3 (n8n-tak /outlook-bijlage)
+            - {name: MEELEES_BIJLAGEN, value: "aan"}   # aan sinds 0.0.4 (B3b wv1751: pod-kant van de review klaar)
           ports:
             - {containerPort: 8080}
             - {containerPort: 8081}
