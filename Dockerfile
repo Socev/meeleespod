@@ -47,8 +47,11 @@ COPY beleid/chromium-beleid.json /etc/chromium/policies/managed/meeleespod.json
 COPY beleid/chromium-beleid.json /etc/opt/chrome/policies/managed/meeleespod.json
 COPY beleid/chromium-beleid.json /etc/opt/chrome_for_testing/policies/managed/meeleespod.json
 COPY meeleespod/ /app/meeleespod/
-ARG GIT_SHA=onbekend
-RUN echo "$GIT_SHA" > /app/GIT_SHA && python3 -c "import playwright, sys; print(sys.version)"
+# Zonder commit meldt het image "pod-dev" (B3-review KAN 5): dan faalt de bouw liever.
+ARG GIT_SHA
+RUN set -eu; \
+    echo "$GIT_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "GIT_SHA ontbreekt of is geen volledige commit" >&2; exit 1; }; \
+    echo "$GIT_SHA" > /app/GIT_SHA && python3 -c "import playwright, sys; print(sys.version)"
 ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp/thuis TZ=Europe/Amsterdam \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright MEELEES_VANGER=/app/vanger/dist/vanger/src/vanger.js
 WORKDIR /app

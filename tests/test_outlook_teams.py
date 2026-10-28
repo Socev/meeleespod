@@ -73,8 +73,9 @@ def test_bijlagen_alleen_bij_expliciet_oordeel(monkeypatch):
     monkeypatch.setattr(outlook, "_get", lambda s, url, tekst=False: opgehaald.append(url) or {"ContentBytes": ""})
     mail = {"id": "m1", "thread_id": "t", "_v2id": "v", "_bijlagen_meta": [
         {"naam": "a.pdf", "id": "x", "bytes": 10, "inline": False, "_soort": "#Microsoft.OutlookServices.FileAttachment"}]}
-    for oordelen in ({}, {"m1": {"klasse": "patientgebonden"}}, {"m1": {"klasse": None}}, {"m1": "zakelijk"}):
-        assert outlook.bijlagen_voor_mail({}, mail, oordelen) == (0, 0)
+    for oordelen in ({}, {"m1": {"klasse": "patientgebonden"}}, {"m1": {"klasse": None}}, {"m1": "zakelijk"},
+                     {"m1": {"klasse": "twijfel", "terugval": True}}):
+        assert outlook.bijlagen_voor_mail({}, mail, oordelen) == {"doorgelaten": 0, "geweigerd": 0, "herkansing": 0}
     assert not opgehaald, "zonder expliciet zakelijk/twijfel wordt er niets opgehaald"
 
 

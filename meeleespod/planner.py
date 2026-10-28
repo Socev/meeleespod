@@ -66,6 +66,10 @@ def hersteld(dienst):
     if stand()[dienst].get("login_nodig"):
         zet(dienst, login_nodig=False)
         webhook.wis_alarm(dienst, "login")
+        # B3-review ZOU 6: contacttijd weg, zodat de eerstvolgende ronde meteen een levensteken stuurt. n8n
+        # (Pod-contact? → AI - Meeleespod-seintjes) zet daarop de login-rij dicht; anders kon David na een snelle
+        # herinlog toch nog de herinnering "uitgelogd" krijgen.
+        staat.werk_bij("contact", lambda d: d.pop(dienst, None))
         log("login_hersteld", dienst=dienst)
 
 

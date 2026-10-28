@@ -14,6 +14,8 @@ c() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 eis() { if [ "$2" = "$3" ]; then echo "  OK    $1 ($2)"; else echo "::error::$1: verwacht $3, kreeg $2"; docker logs meelees-rook | tail -20; exit 1; fi; }
 A=http://127.0.0.1:18081; P=http://127.0.0.1:18080
 eis "uid 1000" "$(docker exec meelees-rook id -u)" 1000
+eis "versie = commit (geen pod-dev)" "$(docker exec meelees-rook sh -c 'grep -Ec "^[0-9a-f]{40}$" /app/GIT_SHA')" 1
+eis "stand meldt de commit" "$(curl -s -H "Authorization: Bearer $SLEUTEL" $A/api/stand | python3 -c 'import json,sys; v=json.load(sys.stdin)["versie"]; print("ok" if len(v)==12 and v!="dev" else v)')" ok
 eis "rootfs alleen-lezen" "$(docker exec meelees-rook sh -c 'touch /app/x 2>/dev/null && echo schrijfbaar || echo alleen-lezen')" alleen-lezen
 eis "API zonder sleutel" "$(c $A/api/stand)" 401
 eis "API met sleutel" "$(c -H "Authorization: Bearer $SLEUTEL" $A/api/stand)" 200

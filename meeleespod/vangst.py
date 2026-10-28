@@ -137,9 +137,20 @@ def draai_vanger(dienst, modus, timeout_s):
 # ---- profiel opschonen (review MOET 6) -------------------------------------------------------------------------------
 # Teams-web en OWA bewaren berichten in IndexedDB, Cache Storage en service workers (de pc-scripts lazen juist die
 # databank). Na elke vangst of Parro-ronde gaat dat weg; cookies en Local Storage (de MSAL-sessie) blijven, anders
-# kan er niet stil vernieuwd worden.
+# kan er niet stil vernieuwd worden. Voor Parro blijft ook IndexedDB staan (zie BEHOUD_IN_PROFIEL).
 WIS_IN_PROFIEL = ("IndexedDB", "Service Worker", "Cache", "Code Cache", "GPUCache", "File System", "blob_storage",
                   "Session Storage", "Sessions", "shared_proto_db", "WebStorage", "DawnWebGPUCache", "DawnGraphiteCache")
+# Parro (wv1751, gemeten 28-10-2026): de Parro-webapp (Flutter) bewaart accessToken, refreshToken en expiresAt in een
+# SQLite-databank `parro_db` (Drift), die in Chromium in IndexedDB staat (in een lege browser op talk.parro.com:
+# indexedDB.databases() = parro_db + twee firebase-databanken; OPFS leeg; Local Storage = FlutterSecureStorage-sleutels).
+# Wissen = het vernieuwtoken weg: na het verlopen van het toegangstoken (1 u) was Parro uitgelogd (27-10 18:57 → 20:25Z).
+# Parro bevat geen patiëntgegevens (wel kindergegevens); de sessie blijft daarom staan: IndexedDB, File System (OPFS,
+# mocht Drift daarheen wisselen) en WebStorage (QuotaManager, de boekhouding van die opslag). Caches gaan wel weg.
+BEHOUD_IN_PROFIEL = {"parro": frozenset({"IndexedDB", "File System", "WebStorage"})}
+
+
+def wis_lijst(dienst):
+    return tuple(n for n in WIS_IN_PROFIEL if n not in BEHOUD_IN_PROFIEL.get(dienst, frozenset()))
 
 
 def wis_berichtcache(dienst):
@@ -147,7 +158,7 @@ def wis_berichtcache(dienst):
     prof = I.GEHEIM / dienst / "profiel"
     n = 0
     for basis in [prof] + [p for p in prof.glob("*") if p.is_dir() and (p.name == "Default" or p.name.startswith("Profile"))]:
-        for naam in WIS_IN_PROFIEL:
+        for naam in wis_lijst(dienst):
             doel = basis / naam
             if doel.is_symlink():
                 doel.unlink()

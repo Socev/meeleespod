@@ -66,3 +66,37 @@ def pdf_met_tekst_en_beeld(b, h, tekst=TEKST):
         _stroom(beeld, f" /Type /XObject /Subtype /Image /Width {b} /Height {h} /ColorSpace /DeviceGray "
                        f"/BitsPerComponent 8 /Filter /FlateDecode".encode()),
     ])
+
+
+def _tekstpagina(extra=b""):
+    regels = [TEKST[i:i + 80] for i in range(0, len(TEKST), 80)]
+    inhoud = b"BT /F1 11 Tf 50 780 Td 14 TL " + b" ".join(
+        b"(" + r.replace("(", "").replace(")", "").encode("latin-1") + b") '" for r in regels) + b" ET"
+    return inhoud
+
+
+def pdf_met_annotatie(soort=b"Text", formulier=False):
+    """Tekstpagina plus één annotatie (/Text = notitie, /Link = koppeling, /Widget = formulierveld). Verzonnen inhoud."""
+    if soort == b"Widget":
+        annot = b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (veld) /V (Verzonnen waarde) /Rect [50 600 250 620] /P 3 0 R >>"
+    elif soort == b"Link":
+        annot = b"<< /Type /Annot /Subtype /Link /Rect [50 600 250 620] /A << /S /URI /URI (https://voorbeeld.nl) >> >>"
+    else:
+        annot = b"<< /Type /Annot /Subtype /" + soort + b" /Rect [50 500 70 520] /Contents (Verzonnen notitie) /P 3 0 R >>"
+    catalogus = b"<< /Type /Catalog /Pages 2 0 R" + (b" /AcroForm << /Fields [6 0 R] >>" if formulier else b"") + b" >>"
+    return _pdf([
+        catalogus,
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /Annots [6 0 R] >>",
+        _stroom(_tekstpagina()),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        annot,
+    ])
+
+
+def pdf_met_objectstroom(binnen, filter_=b"/FlateDecode", parms=b""):
+    """Een pdf-fragment met een (gecomprimeerde) objectstroom; alleen voor de structuurtoets, niet om te openen."""
+    data = zlib.compress(binnen) if filter_ == b"/FlateDecode" else binnen
+    return (b"%PDF-1.5\n1 0 obj\n<< /Type /Catalog >>\nendobj\n7 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Filter "
+            + filter_ + parms + b" /Length " + str(len(data)).encode() + b" >>\nstream\n" + data
+            + b"\nendstream\nendobj\n%%EOF\n")

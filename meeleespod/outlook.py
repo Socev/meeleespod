@@ -38,6 +38,11 @@ MAP_UITSLUITEN_NAAM = {"ongewenste e-mail", "junk email", "junk", "verwijderde i
 SELECT = ("Id,InternetMessageId,ConversationId,ParentFolderId,From,Sender,ToRecipients,Subject,ReceivedDateTime,"
           "HasAttachments,IsDraft,Body,UniqueBody,BodyPreview")
 TOEGESTANE_KLASSEN_BIJLAGEN = ("zakelijk", "twijfel")
+# Bijlagen (review ZOU 1/2): n8n doet Qwen tot 3 × 240 s per stuk, plus Jev en de Intake → ruim wachten.
+BIJLAGE_TIMEOUT = 960
+HERKANS_MAX = 3          # herkansingen na de eerste poging; daarna opgeven (logregel bijlage_opgegeven)
+HERKANS_PER_RONDE = 10
+WACHTRIJ_MAX = 50
 
 
 class LoginNodig(Exception):
@@ -249,8 +254,12 @@ def ronde(modus="proef"):
             except vangnet.HttpFout:
                 pass
     dry = modus != "live"
-    tel, fouten_op_rij, verstuurd, bijl_tel = {}, 0, 0, {"doorgelaten": 0, "geweigerd": 0}
+    tel, fouten_op_rij, verstuurd, bijl_tel = {}, 0, 0, {"doorgelaten": 0, "geweigerd": 0, "herkansing": 0, "opgegeven": 0}
     ooit_fout = False   # review MOET 2: één mislukt blok = waterlijn blijft staan (gezien voorkomt dubbel versturen)
+    if not dry and I.BIJLAGEN_AAN:
+        # eerst wat bij een eerdere ronde door een storing bleef liggen (niet wat deze ronde zelf in de wachtrij zet)
+        for k, v in herkans_bijlagen(sessie, oordelen).items():
+            bijl_tel[k] = bijl_tel.get(k, 0) + v
     for i in range(0, len(mails), BATCH):
         blok = mails[i:i + BATCH]
         payload = [{k: v for k, v in m.items() if not k.startswith("_")} for m in blok]
@@ -272,18 +281,21 @@ def ronde(modus="proef"):
         for m in blok:
             r = per_id.get(m["id"])
             klasse = r.get("klasse") if isinstance(r, dict) and isinstance(r.get("klasse"), str) else None
-            tel[klasse or "geen_oordeel"] = tel.get(klasse or "geen_oordeel", 0) + 1
+            # B3-review MOET 1: n8n zet terugval: true als Qwen geen bruikbaar oordeel gaf en n8n zelf 'twijfel' koos.
+            # Dat is geen uitdrukkelijk oordeel: niet bewaren, dus nooit bijlagen (ook niet als het veld raar gevuld is).
+            terugval = isinstance(r, dict) and r.get("terugval") not in (None, False)
+            sleutel = (klasse or "geen_oordeel") if not terugval else "terugval"
+            tel[sleutel] = tel.get(sleutel, 0) + 1
             if not dry:
                 # alleen een oordeel uit een live-ronde telt; ontbreekt het, dan weg met een oud oordeel (review)
-                if klasse:
+                if klasse and not terugval:
                     oordelen[m["id"]] = {"klasse": klasse, "tijd": nu.isoformat()}   # alleen de klasse, geen tekst
                 else:
                     oordelen.pop(m["id"], None)
                 gezien[m["id"]] = nu.isoformat()
                 if I.BIJLAGEN_AAN:
-                    d, g = bijlagen_voor_mail(sessie, m, oordelen)
-                    bijl_tel["doorgelaten"] += d
-                    bijl_tel["geweigerd"] += g
+                    for k, v in bijlagen_voor_mail(sessie, m, oordelen).items():
+                        bijl_tel[k] = bijl_tel.get(k, 0) + v
         if not dry:
             staat.schrijf("outlook", st)
     for m in ruw:
@@ -302,6 +314,7 @@ def ronde(modus="proef"):
            "verstuurd": verstuurd, "overig": n_uit, "ids": ids_hash(m["id"] for m in mails), **tel}
     if I.BIJLAGEN_AAN and not dry:
         uit.update(bijl_tel)
+        uit["wachtrij"] = len(staat.lees("bijlage_wachtrij").get("rij") or [])
     if verstuurd == 0 and not ooit_fout and not dry:
         try:
             webhook.levensteken("outlook")
@@ -310,42 +323,135 @@ def ronde(modus="proef"):
     return uit
 
 
+def _reden_code(r):
+    """n8n-reden als korte code voor het log (alleen het eerste woord, bv. 'patientgebonden (BSN-regel)' → patientgebonden)."""
+    m = re.match(r"[a-z_]{1,32}", r if isinstance(r, str) else "")
+    return m.group(0) if m else "onbekend"
+
+
+def lever_bijlage(sessie, mail_id, thread_id, v2id, bijlage_id, naam=""):
+    """Haalt één bijlage op, beoordeelt hem en stuurt hem naar n8n. Geeft door | geweigerd | herkansen.
+    Herkansen alleen bij een storing (review ZOU 1): n8n 503 (Qwen), een andere 5xx (bv. Intake legde niet vast),
+    time-out of verbindingsfout, of Outlook tijdelijk niet bereikbaar. Een weigering (200 door:false, 4xx) is definitief."""
+    url = f"{BASIS}/messages/{quote(v2id, safe='')}/attachments/{quote(bijlage_id, safe='')}"
+    try:
+        j = _get(sessie, url)
+    except (LoginNodig, vangnet.VerbindFout):
+        return "herkansen"
+    except vangnet.HttpFout as e:
+        return "herkansen" if e.status >= 500 else "geweigerd"
+    except Exception:
+        return "geweigerd"
+    if not isinstance(j, dict) or "FileAttachment" not in str(j.get("@odata.type") or "FileAttachment") or j.get("IsInline") is True:
+        return "geweigerd"
+    try:
+        inhoud = base64.b64decode(j.get("ContentBytes") or "", validate=True)
+    except ValueError:
+        return "geweigerd"
+    naam = (j.get("Name") or naam or "")[:200]
+    j = None
+    besluit = bijlagen.beoordeel(naam, inhoud)
+    if not besluit["door"]:
+        log("bijlage_geweigerd", dienst="outlook", reden=besluit["reden"])
+        return "geweigerd"
+    try:
+        data = webhook.post("outlook-bijlage", {
+            "mail_id": mail_id, "thread_id": thread_id, "naam": naam, "type": besluit["soort"],
+            "tekst": besluit["tekst"], "bytes_b64": base64.b64encode(inhoud).decode("ascii"),
+            "sha256": besluit["sha256"]}, timeout=BIJLAGE_TIMEOUT)
+    except vangnet.HttpFout as e:
+        log("bijlage_niet_afgeleverd", dienst="outlook", http=e.status)
+        return "herkansen" if e.status >= 500 else "geweigerd"
+    except vangnet.VerbindFout as e:
+        log("bijlage_niet_afgeleverd", dienst="outlook", code=e.soort)
+        return "herkansen"
+    except Exception as e:
+        log("bijlage_niet_afgeleverd", dienst="outlook", code=type(e).__name__)
+        return "geweigerd"
+    finally:
+        inhoud = None
+    # review ZOU 2: alleen door:true (en ok) is doorgelaten; door:false is een weigering door n8n, geen aflevering
+    if isinstance(data, dict) and data.get("ok") is True and data.get("door") is True:
+        log("bijlage_doorgelaten", dienst="outlook", status="stuk" if data.get("stuk_id") else "zonder_stuk_id")
+        return "door"
+    log("bijlage_geweigerd", dienst="outlook", reden="n8n_" + _reden_code(data.get("reden") if isinstance(data, dict) else ""))
+    return "geweigerd"
+
+
+def _in_wachtrij(mail, b):
+    """Alleen ids (mail, gesprek, bericht, bijlage) en een teller; nooit inhoud of naam (review ZOU 1)."""
+    def f(d):
+        rij = d.setdefault("rij", [])
+        if any(x.get("mail_id") == mail["id"] and x.get("bijlage_id") == b["id"] for x in rij):
+            return False
+        if len(rij) >= WACHTRIJ_MAX:
+            log("bijlage_opgegeven", dienst="outlook", reden="wachtrij_vol")
+            return False
+        rij.append({"mail_id": mail["id"], "thread_id": mail.get("thread_id") or "", "v2id": mail["_v2id"],
+                    "bijlage_id": b["id"], "pogingen": 1, "sinds": datetime.now(timezone.utc).isoformat()})
+        return True
+    return staat.werk_bij("bijlage_wachtrij", f)
+
+
 def bijlagen_voor_mail(sessie, mail, oordelen):
-    """Ontwerp § 5.3: alleen bij een UITDRUKKELIJK oordeel zakelijk of twijfel; alleen bestanden met een echte tekstlaag.
-    Geeft (doorgelaten, geweigerd)."""
+    """Ontwerp § 5.3: alleen bij een UITDRUKKELIJK oordeel zakelijk of twijfel (geen terugval); alleen bestanden met een
+    echte tekstlaag. Geeft tellers {doorgelaten, geweigerd, herkansing}."""
+    tel = {"doorgelaten": 0, "geweigerd": 0, "herkansing": 0}
     oordeel = oordelen.get(mail["id"]) if isinstance(oordelen.get(mail["id"]), dict) else None
     if not bijlagen.mag_bijlagen(oordeel):
-        return 0, 0
-    d = g = 0
+        return tel
     meta = [b for b in mail.get("_bijlagen_meta") or [] if not b.get("inline") and "FileAttachment" in b.get("_soort", "")]
     for b in meta[:bijlagen.MAX_PER_MAIL]:
-        if b.get("bytes", 0) > bijlagen.MAX_BYTES:
-            g += 1
+        if b.get("bytes", 0) > bijlagen.MAX_BYTES or not b.get("id"):
+            tel["geweigerd"] += 1
             continue
-        try:
-            url = f"{BASIS}/messages/{quote(mail['_v2id'], safe='')}/attachments/{quote(b['id'], safe='')}"
-            j = _get(sessie, url)
-            inhoud = base64.b64decode(j.get("ContentBytes") or "")
-        except Exception:
-            g += 1
+        uit = lever_bijlage(sessie, mail["id"], mail.get("thread_id") or "", mail["_v2id"], b["id"], b.get("naam") or "")
+        if uit == "door":
+            tel["doorgelaten"] += 1
+        elif uit == "herkansen" and _in_wachtrij(mail, b):
+            tel["herkansing"] += 1
+        elif uit == "herkansen":
+            tel["geweigerd"] += 1   # al in de wachtrij of wachtrij vol
+        else:
+            tel["geweigerd"] += 1
+    return tel
+
+
+def herkans_bijlagen(sessie, oordelen):
+    """Bij de volgende live-ronde: wat door een storing bleef liggen opnieuw ophalen en sturen; hooguit HERKANS_MAX
+    herkansingen per bijlage, dan opgeven met een logregel. Het oordeel moet dan nog steeds uitdrukkelijk zijn."""
+    tel = {"doorgelaten": 0, "geweigerd": 0, "herkansing": 0, "opgegeven": 0}
+    rij = list((staat.lees("bijlage_wachtrij").get("rij") or []))
+    if not rij:
+        return tel
+    blijft = []
+    for x in rij[:HERKANS_PER_RONDE]:
+        oordeel = oordelen.get(x.get("mail_id")) if isinstance(oordelen.get(x.get("mail_id")), dict) else None
+        if not bijlagen.mag_bijlagen(oordeel) or not all(isinstance(x.get(k), str) and x.get(k) for k in ("mail_id", "v2id", "bijlage_id")):
+            tel["geweigerd"] += 1
             continue
-        besluit = bijlagen.beoordeel(b["naam"], inhoud)
-        if not besluit["door"]:
-            g += 1
-            log("bijlage_geweigerd", dienst="outlook", reden=besluit["reden"])
-            continue
-        try:
-            webhook.post("outlook-bijlage", {
-                "mail_id": mail["id"], "thread_id": mail["thread_id"], "naam": b["naam"], "type": besluit["soort"],
-                "tekst": besluit["tekst"], "bytes_b64": base64.b64encode(inhoud).decode("ascii"),
-                "sha256": besluit["sha256"]}, timeout=WEBHOOK_TIMEOUT)
-            d += 1
-        except Exception as e:
-            g += 1
-            log("bijlage_niet_afgeleverd", dienst="outlook", code=type(e).__name__)
-        finally:
-            inhoud = None
-    return d, g
+        uit = lever_bijlage(sessie, x["mail_id"], x.get("thread_id") or "", x["v2id"], x["bijlage_id"])
+        if uit == "door":
+            tel["doorgelaten"] += 1
+        elif uit == "geweigerd":
+            tel["geweigerd"] += 1
+        else:
+            x["pogingen"] = int(x.get("pogingen") or 1) + 1
+            if x["pogingen"] > HERKANS_MAX + 1:
+                tel["opgegeven"] += 1
+                log("bijlage_opgegeven", dienst="outlook", poging=x["pogingen"] - 1)
+            else:
+                tel["herkansing"] += 1
+                blijft.append(x)
+    blijft += rij[HERKANS_PER_RONDE:]
+    klaar = {(x.get("mail_id"), x.get("bijlage_id")) for x in rij}
+
+    def f(d):
+        # wat in de tussentijd door een andere aanroep is bijgezet, blijft staan
+        nieuw = [y for y in d.get("rij") or [] if (y.get("mail_id"), y.get("bijlage_id")) not in klaar]
+        d["rij"] = blijft + nieuw
+    staat.werk_bij("bijlage_wachtrij", f)
+    return tel
 
 
 def vernieuw_nodig():

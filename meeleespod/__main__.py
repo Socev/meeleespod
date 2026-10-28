@@ -74,11 +74,17 @@ def zelftoets():
     eis("geen oordeel = geen bijlagen", not bijlagen.mag_bijlagen(None) and not bijlagen.mag_bijlagen({})
         and not bijlagen.mag_bijlagen({"klasse": "patientgebonden"}) and not bijlagen.mag_bijlagen({"klasse": None})
         and bijlagen.mag_bijlagen({"klasse": "zakelijk"}))
+    eis("terugval-oordeel van n8n = geen bijlagen", not bijlagen.mag_bijlagen({"klasse": "twijfel", "terugval": True}))
     jpg = b"\xff\xd8\xff\xe0" + b"\x00" * 2000
     eis("jpg gaat nooit door", bijlagen.beoordeel("brief.pdf", jpg)["door"] is False)
     from .toetsdata import pdf_met_tekst, pdf_zonder_tekst
     eis("pdf zonder tekstlaag (scan) gaat niet door", bijlagen.beoordeel("scan.pdf", pdf_zonder_tekst())["door"] is False)
     eis("pdf met tekstlaag gaat door", bijlagen.beoordeel("offerte.pdf", pdf_met_tekst())["door"] is True)
+    from .toetsdata import pdf_met_annotatie
+    eis("pdf met notitie of formulier gaat niet door (poppler in dit image)",
+        bijlagen.beoordeel("n.pdf", pdf_met_annotatie(b"Text"))["reden"] == "pdf_opmerkingen"
+        and bijlagen.beoordeel("f.pdf", pdf_met_annotatie(b"Widget", formulier=True))["reden"] == "pdf_formulier")
+    eis("pdf met alleen een link gaat door", bijlagen.beoordeel("l.pdf", pdf_met_annotatie(b"Link"))["door"] is True)
     print("zelftoets:", "GESLAAGD" if not fout else f"{len(fout)} FOUT")
     return 0 if not fout else 1
 
