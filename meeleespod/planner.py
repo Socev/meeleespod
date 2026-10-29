@@ -67,6 +67,11 @@ def _fout(uitslag, standaard):
         f["gestart"] = bool(uitslag["gestart"])
     if uitslag.get("scherm") in vangst.SCHERMEN:
         f["scherm"] = uitslag["scherm"]
+    # wv1958: bij Teams ook welke audiences er waren en de meting (al gefilterd in vangst.draai_vanger)
+    if isinstance(uitslag.get("audiences"), dict):
+        f["audiences"] = uitslag["audiences"]
+    if isinstance(uitslag.get("diag"), dict):
+        f["diag"] = uitslag["diag"]
     return f
 
 
@@ -146,9 +151,12 @@ def draai(dienst, handmatig=False):
                 zet(dienst, **velden)
             elif code == 4:
                 login_nodig(dienst)
-                if uitslag.get("scherm") in vangst.SCHERMEN:
-                    # wv1950: inlogscherm of MCAS-melding? (alleen de soort, nooit de url)
-                    zet(dienst, laatste_fout={**stand()[dienst].get("laatste_fout", {}), "scherm": uitslag["scherm"]})
+                # wv1950: inlogscherm of MCAS-melding? (alleen de soort, nooit de url); wv1958: + vangercode, audiences, meting
+                extra = {k: v for k, v in _fout(uitslag, "LOGIN_NODIG").items() if k in ("scherm", "audiences", "diag")}
+                if uitslag.get("code") not in (None, "LOGIN_NODIG"):
+                    extra["vanger"] = str(uitslag["code"])[:32]
+                if extra:
+                    zet(dienst, laatste_fout={**stand()[dienst].get("laatste_fout", {}), **extra})
                 return {"status": "login_nodig"}
             else:
                 n = int(s.get("vernieuw_fouten") or 0) + 1

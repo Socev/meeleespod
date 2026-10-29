@@ -66,8 +66,9 @@ venster staat dan de inlogpagina van Microsoft of Parro, geen postvak. Het sluit
 10 min; elke start gaat als `[dienst/inlogvenster]`-regel naar n8n. Browserbeleid: kiosk, geen downloads, geen
 ontwikkelaarsgereedschap (devtools:// geblokkeerd; het beleid DeveloperToolsAvailability kan niet: dat sluit ook het
 besturingskanaal van Playwright), chrome:// en file:// geblokkeerd, popups buiten de inloghosts dicht. Na elke vangst en elke
-Parro-ronde worden IndexedDB, Cache Storage, service workers en sessieopslag uit het profiel gewist (Teams-web en OWA
-bewaren daar berichten); cookies en Local Storage (de MSAL-sessie) blijven. **Parro** (wv1751, gemeten 28-10-2026): de
+Parro-ronde worden IndexedDB, Cache Storage, service workers en sessieopslag uit het profiel gewist (OWA bewaart daar
+berichten); cookies en Local Storage (de MSAL-sessie) blijven. **Teams** wist sinds wv1958 alleen nog de HTTP-/codecaches
+(zie *Teams-meting en profiel* onderaan). **Parro** (wv1751, gemeten 28-10-2026): de
 Parro-webapp bewaart toegangs- en vernieuwtoken in de IndexedDB-databank `parro_db` (Drift/SQLite); die wissen gaf
 "uitgelogd" zodra het toegangstoken na 1 u verliep. Voor Parro blijven IndexedDB, File System en WebStorage daarom staan
 (Parro bevat geen patiëntgegevens, wel kindergegevens; `/geheim` zit niet in de NAS-back-up); caches gaan wel weg.
@@ -240,3 +241,36 @@ geen API-verkeer → klik Inloggen (luisteraar vóór de klik) → op de ParnasS
 - **Restrisico**: het wachtwoord staat leesbaar voor de pod-gebruiker in `/geheim` (geen aparte sleutel om mee te
   versleutelen); wie de pod overneemt, heeft het. Een andere app op Olares kan het wachtwoord niet lezen, wel wissen of
   een proef starten (alarm in de machinekamer).
+
+## Teams-meting en profiel (sinds wv1958)
+**Aanleiding** (David 29-10-2026 ± 11:35–11:52Z, twee inlogvensters): Teams-web leek ingelogd maar meldde dat chats tijdelijk
+niet te laden waren, ging daarna vanzelf heen en weer (dat is deels de rondgang van teams-access: MCAS-Chat, Calendar,
+teams.cloud.microsoft, teams.microsoft.com, outlook /mail/, m365, office.com), kwam op een inlogscherm dat bleef verversen,
+en sloot met `ONVOLLEDIG` (geen chatsvcagg/ic3). De geslaagde inlog van 27-10 was in een leeg profiel.
+- **Meting** (`vanger.ts`, alleen Teams): elke 4 s en vlak vóór het sluiten. Alleen soorten en aantallen, nooit url, tekst
+  of token: `nav` (navigaties van het hoofdframe per hostklasse `TEAMS_MCAS`/`TEAMS`/`MCAS_MELDING`/`MS_INLOG`/`OUTLOOK`/
+  `M365`/`STATIC`/`ANDERS`), `zelfde_adres` (twee keer op rij hetzelfde adres), `herlaad` (documenten met navigation type
+  reload), `popup_dicht` per hostklasse, `chats_fout` (`melding` = foutzin in een meldingselement role=alert/status/dialog
+  of aria-live; `tekst` = elders in de pagina, zwak: gewone chattekst kan zo'n zin bevatten), `msal` (per hostklasse de
+  audiences met een geldig MSAL-toegangstoken in localStorage: chatsvcagg, ic3, graph, presence, spaces, outlook,
+  substrate) en `rt` (hostklassen met een vernieuwtoken). `scherm` = `TEAMS_CHATS_FOUT` zodra `chats_fout.melding` > 0 in
+  de loop van de vangst; anders het scherm vlak vóór het sluiten. De foutzinnen (en + nl) staan in `CHATS_FOUT_RE`; de
+  echte Teams-tekst is niet gemeten (geen inlog) → na de volgende inlog toetsen of `melding` of `tekst` aansloeg.
+- **Stand**: `diensten.teams.diag` = laatste 4 vangsten (stil en zichtbaar: tijd, modus, code, scherm, audiences, diag);
+  `laatste_fout` draagt bij Teams ook `audiences` en `diag`, en bij stil vernieuwen `vanger` (bv. `ONVOLLEDIG`).
+- **Profiel niet meer wissen**: `BEHOUD_IN_PROFIEL["teams"]` = alles behalve `Cache`, `Code Cache`, `GPUCache`. Teams-web v2
+  bewaart zijn toestand in IndexedDB en de service worker; het oude wissen liet een half profiel achter (IndexedDB weg,
+  MSAL in Local Storage nog wel) dat Teams nooit zelf maakt. Op de werk-pc werd nooit gewist. **Gevolg (bewust)**:
+  Teams-berichten blijven in het profiel in `/geheim` (app-cache, 0700, niet in de NAS-back-up), zoals op de werk-pc.
+- **Eenmalig vers profiel**: `VERS_PROFIEL = {"teams": "wv1958"}`; de eerste browserstart na deze versie gooit het
+  Teams-profiel (en resten in `home/.teams-cli`) één keer weg (merk in `/staat/profiel_vers.json`). Daarmee is de
+  begintoestand dezelfde als bij de geslaagde inlog van 27-10. Opnieuw doen = nieuw merk in een nieuwe commit.
+- **Popup-sluiter**: `*.static.microsoft` (Teams-schil, `teams.public.onecdn.static.microsoft`) staat nu ook op de lijst;
+  de rest van de Microsoft-domeinen stond er al. Gesloten popups zijn te zien in `diag.popup_dicht`.
+- **Toetsen**: `tests/test_teams_meting.py` (witte lijsten gelijk in TS en Python, filter, wislijst, vers profiel, stand) en
+  `ci/teams_meting_toets.cjs` (echte Chromium, nagemaakte pagina's, verzonnen tokens; ook in de rooktest). Lokaal:
+  `cd vanger && npx tsc -p tsconfig.json`, dan `MEELEES_TOETS_CHROMIUM=<headless shell> MEELEES_TOETS_CHROMIUM_VOL=<chrome>
+  node ci/teams_meting_toets.cjs vanger/dist/vanger/src/vanger.js`.
+- **Lezen van de uitslag**: `ONVOLLEDIG` + `TEAMS_CHATS_FOUT` + `msal.TEAMS_MCAS` zonder chatsvcagg/ic3 = Teams-web laadt
+  zijn chats niet onder de MCAS-sessie (tenantbeleid; alleen de beheerder van Huisartsen Eemland kan dat veranderen).
+  Veel `MS_INLOG`-navigaties of `herlaad` zonder chatfout = inloglus; `popup_dicht` > 0 = eigen sluiter.

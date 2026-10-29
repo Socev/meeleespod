@@ -111,7 +111,37 @@ SLOTBESTANDEN = ("SingletonLock", "SingletonSocket", "SingletonCookie")
 BROWSER_SUBCODES = ("SLOT_IN_GEBRUIK", "GEEN_BINARY", "GEEN_SCHERM", "GEHEUGEN", "SCHIJF_VOL", "STARTTIJD",
                     "DOEL_GESLOTEN", "ANDERS")
 # Op welk scherm stond de browser bij een fout (vanger.ts schermSoort): witte lijst, nooit de url.
-SCHERMEN = ("MCAS_MELDING", "MS_INLOG", "APP", "ANDERS", "GEEN")
+SCHERMEN = ("TEAMS_CHATS_FOUT", "MCAS_MELDING", "MS_INLOG", "APP", "ANDERS", "GEEN")
+# Teams-meting (wv1958, vanger.ts diag): alleen deze hostklassen en audiencenamen komen door (zelfde lijsten in vanger.ts).
+HOST_KLASSEN = ("TEAMS_MCAS", "TEAMS", "MCAS_MELDING", "MS_INLOG", "OUTLOOK", "M365", "STATIC", "ANDERS")
+MSAL_NAMEN = ("chatsvcagg", "ic3", "graph", "presence", "spaces", "outlook", "substrate")
+AUD_KORT = ("chatsvcagg", "ic3", "graph")
+
+
+def _getal(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 10**6 else 0
+
+
+def schoon_diag(d):
+    """Teams-meting uit de vanger → alleen getallen, hostklassen en audiencenamen uit de witte lijst."""
+    if not isinstance(d, dict):
+        return None
+    uit = {k: _getal(d.get(k)) for k in ("metingen", "zelfde_adres", "herlaad")}
+    for k in ("nav", "popup_dicht"):
+        r = d.get(k) if isinstance(d.get(k), dict) else {}
+        uit[k] = {h: _getal(r[h]) for h in HOST_KLASSEN if h in r and _getal(r[h])}
+    cf = d.get("chats_fout") if isinstance(d.get("chats_fout"), dict) else {}
+    uit["chats_fout"] = {k: _getal(cf.get(k)) for k in ("melding", "tekst")}
+    m = d.get("msal") if isinstance(d.get("msal"), dict) else {}
+    uit["msal"] = {h: [n for n in MSAL_NAMEN if n in (m[h] if isinstance(m[h], list) else [])] for h in HOST_KLASSEN if h in m}
+    uit["msal"] = {h: v for h, v in uit["msal"].items() if v}
+    rt = d.get("rt") if isinstance(d.get("rt"), list) else []
+    uit["rt"] = [h for h in HOST_KLASSEN if h in rt]
+    return uit
+
+
+def schoon_audiences(a):
+    return {k: bool(a.get(k)) for k in AUD_KORT if k in a} if isinstance(a, dict) else None
 
 
 def browser_subcode(bericht):
@@ -193,6 +223,7 @@ def draai_vanger(dienst, modus, timeout_s):
     """Draait de Node-vanger. Geeft (code, uitslag-dict). uitslag bevat nooit een token."""
     zorg_voor_scherm()
     uitmap = dienstmap(dienst)
+    vers_profiel_eenmalig(dienst)
     ruim_profielslot(dienst)
     proc = subprocess.Popen(["node", I.VANGER, dienst, modus, str(uitmap)], env=kind_omgeving(dienst),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -224,7 +255,13 @@ def draai_vanger(dienst, modus, timeout_s):
         except ValueError:
             continue
     uitslag = {k: uitslag[k] for k in ("ok", "code", "geldig_tot", "audiences", "graph_mail_read", "sub", "gestart",
-                                       "scherm", "mcas") if k in uitslag}
+                                       "scherm", "mcas", "diag") if k in uitslag}
+    if "audiences" in uitslag:
+        uitslag["audiences"] = schoon_audiences(uitslag["audiences"]) or {}
+    if "diag" in uitslag:
+        uitslag["diag"] = schoon_diag(uitslag["diag"])
+        if uitslag["diag"] is None:
+            uitslag.pop("diag")
     if "scherm" in uitslag and uitslag["scherm"] not in SCHERMEN:
         uitslag["scherm"] = "ANDERS"
     if "mcas" in uitslag:
@@ -242,7 +279,18 @@ def draai_vanger(dienst, modus, timeout_s):
     log("vanger", dienst=dienst, modus=modus, exit=proc.returncode, code=str(uitslag.get("code", "-")),
         soort=uitslag.get("sub", "-"), stap=uitslag.get("scherm", "-"), poging=uitslag.get("mcas", 0), overig=weg,
         status=(goed[-1] if goed else "-"))
+    if dienst == "teams":
+        bewaar_teams_meting(modus, uitslag)
     return proc.returncode, uitslag
+
+
+def bewaar_teams_meting(modus, uitslag):
+    """wv1958: de laatste 6 Teams-vangsten (stil en zichtbaar) met hun meting, voor /api/stand → diensten.teams.diag."""
+    m = {"tijd": datetime.now(timezone.utc).isoformat(), "modus": modus, "code": str(uitslag.get("code", "-"))[:32]}
+    for k in ("scherm", "audiences", "diag"):
+        if k in uitslag:
+            m[k] = uitslag[k]
+    staat.werk_bij("teams_diag", lambda d: d.__setitem__("reeks", (d.get("reeks") or [])[-5:] + [m]))
 
 
 # ---- profiel opschonen (review MOET 6) -------------------------------------------------------------------------------
@@ -257,7 +305,35 @@ WIS_IN_PROFIEL = ("IndexedDB", "Service Worker", "Cache", "Code Cache", "GPUCach
 # Wissen = het vernieuwtoken weg: na het verlopen van het toegangstoken (1 u) was Parro uitgelogd (27-10 18:57 → 20:25Z).
 # Parro bevat geen patiëntgegevens (wel kindergegevens); de sessie blijft daarom staan: IndexedDB, File System (OPFS,
 # mocht Drift daarheen wisselen) en WebStorage (QuotaManager, de boekhouding van die opslag). Caches gaan wel weg.
-BEHOUD_IN_PROFIEL = {"parro": frozenset({"IndexedDB", "File System", "WebStorage"})}
+# Teams (wv1958, David 29-10-2026: Teams-web gaf na de herinlog "tijdelijk geen chats" en ONVOLLEDIG): op 27-10 lukte de
+# eerste inlog in een leeg profiel; daarna werden IndexedDB, service workers en sessieopslag na elke vangst gewist terwijl
+# Local Storage (MSAL) bleef staan. Op de werk-pc werd nooit gewist. Teams-web v2 bewaart zijn toestand in IndexedDB en
+# de service worker; een half gewist profiel is een toestand die Teams nooit zelf maakt. Daarom wist Teams nu alleen
+# nog de HTTP-/codecaches. Gevolg: Teams-berichten blijven in het profiel in /geheim (app-cache, 0700, niet in de
+# NAS-back-up), zoals op de werk-pc.
+BEHOUD_IN_PROFIEL = {
+    "parro": frozenset({"IndexedDB", "File System", "WebStorage"}),
+    "teams": frozenset(WIS_IN_PROFIEL) - {"Cache", "Code Cache", "GPUCache"},
+}
+# Eenmalig een leeg profiel (zelfde toestand als de geslaagde eerste inlog van 27-10): het huidige Teams-profiel is door
+# het wissen half leeg en de sessie erin is sinds 28-10 verlopen. Eén keer per merk, vóór de eerste browserstart.
+VERS_PROFIEL = {"teams": "wv1958"}
+
+
+def vers_profiel_eenmalig(dienst):
+    """Alleen met `browser_slot` vast, vóór een browserstart. Geeft True als het profiel nu vers is gemaakt."""
+    import shutil
+    merk = VERS_PROFIEL.get(dienst)
+    if not merk or (staat.lees("profiel_vers").get(dienst) == merk):
+        return False
+    prof = I.GEHEIM / dienst / "profiel"
+    shutil.rmtree(prof, ignore_errors=True)
+    for f in ("session.json", "multi-tokens.json", "login-trace.jsonl"):
+        (I.GEHEIM / dienst / "home" / ".teams-cli" / f).unlink(missing_ok=True)
+    dienstmap(dienst)
+    staat.werk_bij("profiel_vers", lambda d: d.__setitem__(dienst, merk))
+    log("profiel_vers", dienst=dienst, status="ok")
+    return True
 
 
 def wis_lijst(dienst):

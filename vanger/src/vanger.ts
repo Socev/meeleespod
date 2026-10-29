@@ -40,7 +40,177 @@ const POPUP_HOSTS = [
   /(^|\.)mcas\.ms$/i,
   /(^|\.)msauth\.net$/i,
   /(^|\.)msftauth\.net$/i,
+  // wv1958: Teams-web haalt zijn schil van *.static.microsoft (teams.public.onecdn.static.microsoft); een popup daarheen
+  // ging dicht. Alle andere Microsoft-domeinen van de opdracht stonden er al.
+  /(^|\.)static\.microsoft$/i,
 ];
+
+// ---- Teams-meting (wv1958) -------------------------------------------------------------------------------------------
+// David 29-10-2026: Teams-web toonde "tijdelijk geen chats", herlaadde vanzelf, kwam op een inlogscherm dat bleef
+// verversen, en daarna ONVOLLEDIG (geen chatsvcagg/ic3). Om dat van buiten te kunnen onderscheiden meet de vanger voor
+// Teams alleen soorten en aantallen: nooit een url, tekst of token. Lijsten staan dubbel (meeleespod/vangst.py);
+// tests/test_teams_meting.py houdt ze gelijk.
+const HOST_KLASSEN = ['TEAMS_MCAS', 'TEAMS', 'MCAS_MELDING', 'MS_INLOG', 'OUTLOOK', 'M365', 'STATIC', 'ANDERS'] as const;
+type HostKlasse = (typeof HOST_KLASSEN)[number];
+// Audiences van een MSAL-toegangstoken in localStorage, op naam (alleen of er een geldig token is).
+const MSAL_NAMEN: Array<[string, string]> = [
+  ['chatsvcagg', 'chatsvcagg\\.teams\\.microsoft\\.com'],
+  ['ic3', 'ic3\\.teams\\.office\\.com'],
+  ['graph', 'graph\\.microsoft\\.com'],
+  ['presence', 'presence\\.teams\\.microsoft\\.com'],
+  ['spaces', 'api\\.spaces\\.skype\\.com'],
+  ['outlook', 'outlook\\.office(365)?\\.com'],
+  ['substrate', 'substrate\\.office\\.com'],
+];
+// De foutmelding "chats tijdelijk niet beschikbaar" (en + nl: de taal van Teams volgt het account, niet de browser).
+// Alleen het ja/nee verlaat de pagina. Treffer in een meldingselement (role=alert/status/dialog, aria-live) = sterk;
+// elders in de pagina = zwak (gewone chattekst kan zo'n zin bevatten; telt apart en zet het scherm niet).
+const CHATS_FOUT_RE = [
+  "(temporar(y|ily)|right now|at the moment)[^.\\n]{0,40}\\b(chats|messages|conversations)\\b",
+  "\\b(chats|messages|conversations)\\b[^.\\n]{0,40}(temporarily|unavailable|can['’]?t be (loaded|shown|displayed)|couldn['’]?t (be )?load)",
+  "(couldn['’]?t|can['’]?t|cannot|unable to|trouble|problem) (load|loading|show|showing|display|get|getting|retriev\\w*)[^.\\n]{0,30}\\b(chats|messages|conversations)\\b",
+  "tijdelijk[^.\\n]{0,40}(chats|berichten|gesprekken)",
+  "(chats|berichten|gesprekken)[^.\\n]{0,40}(tijdelijk niet|niet beschikbaar|niet (worden )?(geladen|gelezen|weergegeven))",
+  "(kunnen|kan) [^.\\n]{0,40}(chats|berichten|gesprekken)[^.\\n]{0,30}niet (laden|lezen|ophalen|weergeven)",
+];
+
+function hostKlasse(url: string): HostKlasse {
+  let h: string;
+  try {
+    h = new URL(url).hostname.toLowerCase();
+  } catch {
+    return 'ANDERS';
+  }
+  if (h === 'mcas-proxyweb.mcas.ms') return 'MCAS_MELDING';
+  if (/^teams\.(cloud\.microsoft|microsoft\.com)\.mcas\.ms$/.test(h)) return 'TEAMS_MCAS';
+  if (/(^|\.)teams\.(cloud\.microsoft|microsoft\.com)$/.test(h)) return 'TEAMS';
+  if (/(^|\.)(login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com)$/.test(h)) return 'MS_INLOG';
+  if (/(^|\.)outlook\.office(365)?\.com(\.mcas\.ms)?$/.test(h)) return 'OUTLOOK';
+  if (/(^|\.)(m365\.cloud\.microsoft|office\.com)(\.mcas\.ms)?$/.test(h)) return 'M365';
+  if (/(^|\.)static\.microsoft$/.test(h)) return 'STATIC';
+  return 'ANDERS';
+}
+
+const diag = {
+  metingen: 0,
+  nav: {} as Record<string, number>, // navigaties van het hoofdframe per hostklasse (ook de eigen rondgang van het pakket)
+  zelfde_adres: 0, // hoofdframe twee keer op rij naar hetzelfde adres (zonder #)
+  herlaad: 0, // documenten die door een herlading ontstonden (performance navigation type "reload")
+  popup_dicht: {} as Record<string, number>, // door de popup-sluiter gesloten pagina's per hostklasse
+  chats_fout: { melding: 0, tekst: 0 }, // metingen met de chatfoutmelding: in een meldingselement / elders in de pagina
+  msal: {} as Record<string, string[]>, // per hostklasse: audiences met een geldig toegangstoken in localStorage
+  rt: [] as string[], // hostklassen waar een MSAL-vernieuwtoken in localStorage stond
+};
+const herlaadDocs = new Set<number>();
+let teamsMeten = false;
+
+function tel(r: Record<string, number>, k: string): void {
+  r[k] = (r[k] ?? 0) + 1;
+}
+
+// Draait IN de pagina (page.evaluate): zelfstandig, geeft alleen getallen, namen uit de lijst en ja/nee terug.
+function paginaMeting(arg: { fout: string[]; auds: Array<[string, string]> }): { fout: number; aud: string[]; rt: boolean; herlaad: number } {
+  const g = globalThis as unknown as {
+    document?: { body?: { innerText?: string }; querySelectorAll: (s: string) => ArrayLike<{ innerText?: string }> };
+    localStorage?: { length: number; key: (i: number) => string | null; getItem: (k: string) => string | null };
+    performance?: { timeOrigin: number; getEntriesByType: (t: string) => Array<{ type?: string }> };
+  };
+  let fout = 0;
+  try {
+    const res = arg.fout.map((s) => new RegExp(s, 'i'));
+    const d = g.document;
+    if (d) {
+      const els = Array.from(d.querySelectorAll('[role=alert],[role=alertdialog],[role=status],[role=dialog],[aria-live]'));
+      const kort = els.map((e) => e.innerText || '').join('\n');
+      if (res.some((r) => r.test(kort))) fout = 2;
+      else if (res.some((r) => r.test((d.body && d.body.innerText) || ''))) fout = 1;
+    }
+  } catch {
+    /* geen meting */
+  }
+  const aud = new Set<string>();
+  let rt = false;
+  try {
+    const ls = g.localStorage;
+    const nu = Date.now() / 1000;
+    if (ls) {
+      for (let i = 0; i < ls.length; i++) {
+        const k = ls.key(i) || '';
+        if (/refreshtoken/i.test(k)) rt = true;
+        if (!/accesstoken/i.test(k)) continue;
+        let v: { target?: unknown; expiresOn?: unknown; expires_on?: unknown } = {};
+        try {
+          v = JSON.parse(ls.getItem(k) || '{}');
+        } catch {
+          continue;
+        }
+        const exp = Number(v.expiresOn ?? v.expires_on ?? 0);
+        if (exp && exp < nu) continue;
+        const t = `${String(v.target ?? '')} ${k}`;
+        for (const [naam, re] of arg.auds) if (new RegExp(re, 'i').test(t)) aud.add(naam);
+      }
+    }
+  } catch {
+    /* geen meting */
+  }
+  let herlaad = 0;
+  try {
+    const p = g.performance;
+    if (p && p.getEntriesByType('navigation').some((e) => e.type === 'reload')) herlaad = Math.floor(p.timeOrigin);
+  } catch {
+    /* geen meting */
+  }
+  return { fout, aud: Array.from(aud), rt, herlaad };
+}
+
+type MeetBlad = { url: () => string; isClosed: () => boolean; evaluate: <R, A>(f: (a: A) => R, a: A) => Promise<R> };
+
+async function meetBlad(p: MeetBlad): Promise<void> {
+  if (p.isClosed()) return;
+  const k = hostKlasse(p.url());
+  if (k === 'MS_INLOG' || k === 'MCAS_MELDING' || k === 'STATIC') return; // geen app-opslag; inlogvelden laten we met rust
+  let m;
+  try {
+    m = await p.evaluate(paginaMeting, { fout: CHATS_FOUT_RE, auds: MSAL_NAMEN });
+  } catch {
+    return; // pagina navigeert of is dicht; de volgende meting probeert opnieuw
+  }
+  diag.metingen++;
+  if (k === 'TEAMS' || k === 'TEAMS_MCAS') {
+    if (m.fout === 2) diag.chats_fout.melding++;
+    else if (m.fout === 1) diag.chats_fout.tekst++;
+  }
+  if (m.herlaad && !herlaadDocs.has(m.herlaad)) {
+    herlaadDocs.add(m.herlaad);
+    diag.herlaad++;
+  }
+  const namen = MSAL_NAMEN.map(([n]) => n);
+  const al = new Set(diag.msal[k] ?? []);
+  for (const n of m.aud) if (namen.includes(n)) al.add(n);
+  if (al.size) diag.msal[k] = namen.filter((n) => al.has(n));
+  if (m.rt && !diag.rt.includes(k)) diag.rt.push(k);
+}
+
+async function meetAlles(): Promise<void> {
+  if (!teamsMeten || !laatsteCtx) return;
+  try {
+    await Promise.all((laatsteCtx.pages() as unknown as MeetBlad[]).map((p) => meetBlad(p)));
+  } catch {
+    /* context dicht */
+  }
+}
+
+function volgNavigatie(p: { on: (e: string, f: (fr: unknown) => void) => void; mainFrame: () => unknown; url: () => string }): void {
+  let vorige = '';
+  p.on('framenavigated', (fr: unknown) => {
+    if (fr !== p.mainFrame()) return;
+    const u = p.url();
+    tel(diag.nav, hostKlasse(u));
+    const a = u.split('#')[0];
+    if (a && a === vorige) diag.zelfde_adres++;
+    vorige = a;
+  });
+}
 
 // Teams: alleen deze audiences gaan naar de lezer (ontwerp § 4: "alleen de audiences die nodig zijn").
 const TEAMS_AUD: Record<string, string> = {
@@ -80,10 +250,15 @@ let browserGestart = false;
 type Blad = { url: () => string };
 let laatsteCtx: { pages: () => Blad[] } | null = null;
 let mcasGeklikt = 0;
+// Teams: het scherm vlak vóór het pakket de browser sloot (daarna zijn er geen pagina's meer om te meten).
+let eindScherm: string | null = null;
 
 // Op welk soort scherm stond de browser toen het misging? Vaste witte lijst, nooit de url zelf (wv1950: Outlook
 // stil vernieuwen bleef sinds 28-10 hangen; inlogscherm en MCAS-melding zijn van buiten niet te onderscheiden).
 function schermSoort(): string {
+  // Teams (wv1958): de chatfoutmelding telt als ze in de loop van de vangst ergens zichtbaar was; aan het eind staat het
+  // pakket na zijn rondgang meestal op office.com, dus het eindscherm zegt dan niets meer over Teams.
+  if (teamsMeten && diag.chats_fout.melding > 0) return 'TEAMS_CHATS_FOUT';
   try {
     const urls = laatsteCtx ? laatsteCtx.pages().map((p) => p.url()) : [];
     if (urls.some((u) => /mcas-proxyweb\.mcas\.ms|certificate-checker/i.test(u))) return 'MCAS_MELDING';
@@ -163,6 +338,21 @@ function zetBeleid(modus: Modus, dienst: Dienst): void {
       for (const p of ctx.pages()) klikMcasMelding(p);
       ctx.on('page', klikMcasMelding);
     }
+    if (dienst === 'teams') {
+      // wv1958: meten (alleen soorten en aantallen). Elke 4 s de open pagina's, en één keer vlak vóór het sluiten.
+      teamsMeten = true;
+      for (const p of ctx.pages()) volgNavigatie(p);
+      ctx.on('page', volgNavigatie);
+      const tik = setInterval(() => void meetAlles(), 4000);
+      if (typeof tik.unref === 'function') tik.unref();
+      const sluit = ctx.close.bind(ctx);
+      ctx.close = async (...a: unknown[]) => {
+        clearInterval(tik);
+        await meetAlles();
+        eindScherm = schermSoort();
+        return sluit(...(a as []));
+      };
+    }
     ctx.on('page', async (p: { opener: () => Promise<unknown>; url: () => string; close: () => Promise<void>; waitForLoadState: (s: string, o: object) => Promise<void> }) => {
       try {
         const opener = await p.opener();
@@ -172,7 +362,10 @@ function zetBeleid(modus: Modus, dienst: Dienst): void {
         } catch {
           /* geen probleem: dan oordelen we op de huidige url */
         }
-        if (!hostToegestaan(p.url())) await p.close();
+        if (!hostToegestaan(p.url())) {
+          tel(diag.popup_dicht, hostKlasse(p.url()));
+          await p.close();
+        }
       } catch {
         /* best effort */
       }
@@ -272,7 +465,7 @@ async function vangTeams(modus: Modus, uitMap: string, profiel: string): Promise
   aanwezig.graph = Boolean(g && g.bearerToken);
   const mailRead = Boolean(g && typeof g.scp === 'string' && /(^|\s)Mail\.Read(\s|$)/.test(g.scp));
   if (!aanwezig.chatsvcagg || !aanwezig.ic3) {
-    klaar({ ok: false, dienst: 'teams', code: 'ONVOLLEDIG', audiences: aanwezig }, UIT_LOGIN);
+    klaar({ ok: false, dienst: 'teams', code: 'ONVOLLEDIG', audiences: aanwezig, scherm: eindScherm ?? schermSoort(), diag }, UIT_LOGIN);
   }
   const exps = Object.values(tokens).map((t) => t.exp).filter((x): x is number => typeof x === 'number');
   const geldigTot = exps.length ? new Date(Math.min(...exps) * 1000).toISOString() : null;
@@ -283,7 +476,7 @@ async function vangTeams(modus: Modus, uitMap: string, profiel: string): Promise
     geldig_tot: geldigTot,
     gevangen_op: new Date().toISOString(),
   });
-  klaar({ ok: true, dienst: 'teams', code: 'OK', geldig_tot: geldigTot, audiences: aanwezig, graph_mail_read: mailRead }, UIT_OK);
+  klaar({ ok: true, dienst: 'teams', code: 'OK', geldig_tot: geldigTot, audiences: aanwezig, graph_mail_read: mailRead, diag }, UIT_OK);
 }
 
 async function hoofd(): Promise<void> {
@@ -299,8 +492,9 @@ async function hoofd(): Promise<void> {
   // 29-10-2026 10:01Z, EXIT_1). Hier wordt zo'n afwijzing gewoon een uitslag (LOGIN_TIMEOUT → LOGIN_NODIG).
   const fout = (e: unknown): void => {
     const s = soortFout(e);
-    const uit: Record<string, unknown> = { ok: false, dienst, code: s.code, gestart: browserGestart, scherm: schermSoort(), mcas: mcasGeklikt };
+    const uit: Record<string, unknown> = { ok: false, dienst, code: s.code, gestart: browserGestart, scherm: eindScherm ?? schermSoort(), mcas: mcasGeklikt };
     if (s.sub) uit.sub = s.sub;
+    if (teamsMeten) uit.diag = diag;
     klaar(uit, s.exit);
   };
   process.on('unhandledRejection', fout);
@@ -313,4 +507,7 @@ async function hoofd(): Promise<void> {
   }
 }
 
-void hoofd();
+// Alleen als programma starten; de toets (ci/teams_meting_toets.cjs) laadt de meetfuncties los.
+if (require.main === module) void hoofd();
+const eindSchermVoorToets = (): string | null => eindScherm;
+export { hostKlasse, paginaMeting, CHATS_FOUT_RE, MSAL_NAMEN, HOST_KLASSEN, zetBeleid, diag, eindSchermVoorToets };

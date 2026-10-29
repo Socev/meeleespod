@@ -56,6 +56,9 @@ def stand_openbaar():
             uit["diensten"][d]["sessie"] = (staat.lees("parro_sessie").get("reeks") or [])[-4:]
             # wv1951: bewaard wachtwoord voor zelf opnieuw inloggen (alleen ja/nee, tijden, codes)
             uit["diensten"][d]["wachtwoord"] = parro_inlog.stand()
+        if d == "teams":
+            # wv1958: meting van de laatste 4 Teams-vangsten (soorten, aantallen, audiencenamen; nooit url of tekst)
+            uit["diensten"][d]["diag"] = (staat.lees("teams_diag").get("reeks") or [])[-4:]
         if d == "teams" and "graph_mail_read" in x:
             uit["diensten"][d]["graph_mail_read"] = x["graph_mail_read"]
             uit["diensten"][d]["audiences"] = x.get("audiences")
