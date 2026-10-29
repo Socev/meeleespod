@@ -42,8 +42,8 @@ spec:
             limits: {cpu: "100m", memory: 64Mi}
       containers:
         - name: meeleespod
-          # CI-run 16 (commit 607a480: profielslot + BROWSERSTART-subcode + exitcode zonder JSON, wv1950), rooktest groen; vast op digest
-          image: ghcr.io/socev/meeleespod:stabiel-16@sha256:e87b3ec25bdab79f647fa3b457b38ddd56ca7160ca40fcda9b899ed347eff1d8
+          # CI-run 17 (commit be214c9: profielslot, subcode, schermmeting, Outlook-MCAS wegklikken, wv1950), rooktest groen; vast op digest
+          image: ghcr.io/socev/meeleespod:stabiel-17@sha256:255eefe74f99386a5e31764f9bfb6000bd3eb6b2f348d8d96fcbd2a447d37f42
           imagePullPolicy: IfNotPresent
           args: ["pod"]
           env:
