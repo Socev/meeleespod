@@ -103,11 +103,18 @@ def beleidtoets():
         p = ctx.new_page()
         # chrome://version = bewijs dat het beleid geladen is; devtools:// = het ontwikkelaarsgereedschap kan niet laden
         for url in ("chrome://version", "devtools://devtools/bundled/inspector.html", "file:///etc/passwd"):
-            try:
-                p.goto(url, timeout=15000)
-                uitkomsten[url] = "NIET geblokkeerd"
-            except Exception as e:
-                uitkomsten[url] = "geblokkeerd" if "ERR_BLOCKED_BY_ADMINISTRATOR" in str(e) else "andere fout: " + type(e).__name__
+            for poging in (1, 2):
+                try:
+                    p.goto(url, timeout=15000)
+                    uitkomsten[url] = "NIET geblokkeerd"
+                except Exception as e:
+                    uitkomsten[url] = "geblokkeerd" if "ERR_BLOCKED_BY_ADMINISTRATOR" in str(e) else "andere fout: " + type(e).__name__
+                    # CI-run 11 (29-10): het tabblad sloot eenmalig na devtools:// (TargetClosedError). Eén nieuwe poging
+                    # in een vers tabblad; ook dan telt alleen ERR_BLOCKED_BY_ADMINISTRATOR als geslaagd.
+                    if poging == 1 and type(e).__name__ == "TargetClosedError":
+                        p = ctx.new_page()
+                        continue
+                break
         ctx.close()
     for url, u in uitkomsten.items():
         print(("  OK    " if u == "geblokkeerd" else "  FOUT  ") + f"beleid {url}: {u}")
