@@ -118,7 +118,7 @@ def browser_subcode(bericht):
     b = bericht or ""
     if re.search(r"ProcessSingleton|profile appears to be in use|SingletonLock|existing browser session", b, re.I):
         return "SLOT_IN_GEBRUIK"
-    if re.search(r"Executable doesn't exist|error while loading shared libraries|ENOENT", b, re.I):
+    if re.search(r"Executable doesn't exist|error while loading shared libraries|ENOENT|Cannot find module", b, re.I):
         return "GEEN_BINARY"
     if re.search(r"Missing X server|cannot open display|\$DISPLAY", b, re.I):
         return "GEEN_SCHERM"
@@ -223,6 +223,12 @@ def draai_vanger(dienst, modus, timeout_s):
             continue
     uitslag = {k: uitslag[k] for k in ("ok", "code", "geldig_tot", "audiences", "graph_mail_read", "sub", "gestart")
                if k in uitslag}
+    if "code" not in uitslag:
+        # wv1950 (gemeten 29-10 09:56Z): de vanger kan sterven zonder JSON-regel (signaal, onafgevangen fout). Dan alleen
+        # exitcode of signaal en een subcode uit de witte lijst op grond van stderr; nooit de tekst zelf.
+        rc = proc.returncode if isinstance(proc.returncode, int) else -1
+        uitslag["code"] = f"EXIT_{rc}" if rc >= 0 else f"SIGNAAL_{-rc}"
+        uitslag["sub"] = browser_subcode(fout.decode("utf-8", "replace"))
     if "sub" in uitslag and uitslag["sub"] not in BROWSER_SUBCODES:
         uitslag["sub"] = "ANDERS"
     if "gestart" in uitslag:

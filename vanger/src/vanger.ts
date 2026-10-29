@@ -81,7 +81,7 @@ let browserGestart = false;
 // meeleespod/vangst.py browser_subcode). De slotmelding staat in de browserlogs ván een "Target ... closed"-fout, dus eerst.
 function browserSubcode(bericht: string): string {
   if (/ProcessSingleton|profile appears to be in use|SingletonLock|existing browser session/i.test(bericht)) return 'SLOT_IN_GEBRUIK';
-  if (/Executable doesn't exist|error while loading shared libraries|ENOENT/i.test(bericht)) return 'GEEN_BINARY';
+  if (/Executable doesn't exist|error while loading shared libraries|ENOENT|Cannot find module/i.test(bericht)) return 'GEEN_BINARY';
   if (/Missing X server|cannot open display|\$DISPLAY/i.test(bericht)) return 'GEEN_SCHERM';
   if (/ENOMEM|out of memory|Cannot allocate memory/i.test(bericht)) return 'GEHEUGEN';
   if (/ENOSPC|No space left/i.test(bericht)) return 'SCHIJF_VOL';

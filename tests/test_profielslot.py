@@ -123,3 +123,20 @@ def test_vanger_uitslag_alleen_witte_lijst(monkeypatch):
     monkeypatch.setattr(vangst.subprocess, "Popen", lambda *a, **k: NepProc())
     code, uit = vangst.draai_vanger("outlook", "stil", 5)
     assert code == 5 and uit == {"ok": False, "code": "BROWSERSTART", "sub": "ANDERS", "gestart": True}
+
+
+def test_vanger_zonder_json_geeft_exitcode(monkeypatch):
+    class NepProc:
+        pid = os.getpid()
+        returncode = -9
+
+        def communicate(self, timeout=None):
+            return (b"", b"node:internal/process Error: browserType.launchPersistentContext: Target page, context or "
+                         b"browser has been closed /geheim/outlook/profiel\n")
+    monkeypatch.setattr(vangst, "zorg_voor_scherm", lambda: None)
+    monkeypatch.setattr(vangst.subprocess, "Popen", lambda *a, **k: NepProc())
+    code, uit = vangst.draai_vanger("outlook", "stil", 5)
+    assert uit == {"code": "SIGNAAL_9", "sub": "DOEL_GESLOTEN"}
+    NepProc.returncode = 1
+    NepProc.communicate = lambda self, timeout=None: (b"", b"")
+    assert vangst.draai_vanger("outlook", "stil", 5)[1] == {"code": "EXIT_1", "sub": "ANDERS"}
