@@ -15,3 +15,6 @@ body.venster{background:#222}
 .balk a{color:#cfe0ff;margin-left:12px}
 .balk button{margin:0 0 0 12px;padding:4px 10px}
 #scherm{width:100vw;height:calc(100vh - 44px)}
+.veld{display:block;font-size:14px;margin:8px 0}
+.veld input{display:block;width:100%;max-width:360px;box-sizing:border-box;font:inherit;padding:6px 8px;border:1px solid #c5cedb;border-radius:6px;margin-top:2px}
+button.wis{background:#fff;color:#b42318;border:1px solid #b42318;margin-left:8px}

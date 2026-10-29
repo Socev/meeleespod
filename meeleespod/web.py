@@ -8,6 +8,9 @@
   GET  /inloggen/status?id= fase van die poging; met de kop X-Meelees-Aanvraag: <token>. Bij fase "venster" één keer
                             de eenmalige VNC-code (alleen voor de aanvrager)
   POST /inloggen/stop       venster dicht
+  POST /parro/wachtwoord    {"gebruiker", "wachtwoord"}: Parro-inlog bewaren voor zelf opnieuw inloggen (wv1951); nooit
+                            terug te lezen, daarna één proef met een gesimuleerd verlopen sessie. Zelfde kop + Origin-eis
+  POST /parro/wachtwoord/wis  bewaarde Parro-inlog weg
   GET  /vnc/?code=...       noVNC-pagina; GET /vnc/ws?code=... = websocket naar x11vnc (code eenmalig, 2 min geldig)
   GET  /novnc/...           de vaste noVNC-bestanden uit het image
 De Socev-API zit NIET op deze poort.
@@ -19,12 +22,13 @@ import mimetypes
 import socket
 import struct
 import threading
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import instellingen as I
-from . import planner, vangst
+from . import parro_inlog, planner, vangst, webhook
 from .api import stand_openbaar
 from .logboek import log
 
@@ -85,7 +89,7 @@ class Pagina(BaseHTTPRequestHandler):
         if u.path == "/stand.json":
             s = stand_openbaar()
             return self._json(200, {"diensten": s["diensten"], "inlogvenster": s["inlogvenster"], "versie": s["versie"],
-                                    "inlogvensters": s["inlogvensters"]})
+                                    "inlogvensters": s["inlogvensters"], "parro_wachtwoord": parro_inlog.stand()})
         if u.path == "/vnc/":
             return self._stuur(200, (HIER / "vnc.html").read_bytes())
         if u.path == "/vnc/ws":
@@ -112,7 +116,7 @@ class Pagina(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlsplit(self.path)
-        if u.path not in ("/inloggen", "/inloggen/stop"):
+        if u.path not in ("/inloggen", "/inloggen/stop", "/parro/wachtwoord", "/parro/wachtwoord/wis"):
             return self._json(404, {"fout": "onbekend"})
         if self.headers.get("X-Meelees-Knop") != "1" or not _zelfde_herkomst(self):
             log("knop_geweigerd", http=403)
@@ -121,11 +125,12 @@ class Pagina(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = -1
-        if n < 0 or n > 1024:
+        if n < 0 or n > (4096 if u.path == "/parro/wachtwoord" else 1024):
             self.close_connection = True
             return self._json(413, {"fout": "te groot"})
-        if n:
-            self.rfile.read(n)
+        body = self.rfile.read(n) if n else b""
+        if u.path.startswith("/parro/wachtwoord"):
+            return self._parro_wachtwoord(u.path, body)
         if u.path == "/inloggen/stop":
             vangst.sluit_inlogvenster()
             return self._json(200, {"ok": True})
@@ -134,6 +139,43 @@ class Pagina(BaseHTTPRequestHandler):
             return self._json(400, {"fout": "onbekende dienst"})
         uit = vangst.start_inlogvenster(dienst, planner.na_vangst)
         return self._json(200 if "id" in uit else 409, uit)
+
+    def _parro_wachtwoord(self, pad, body):
+        """Alleen bewaren of wissen; het antwoord bevat nooit de gebruikersnaam of het wachtwoord. Elke wijziging gaat
+        als [parro/wachtwoord]-alarm naar n8n (machinekamer): een ander proces op Olares kan de knopkop namaken (LEESMIJ)."""
+        tijd = datetime.now().strftime("%H:%M")
+        if pad == "/parro/wachtwoord/wis":
+            parro_inlog.wis()
+            threading.Thread(target=lambda: webhook.alarm("parro", "wachtwoord", f"bewaard Parro-wachtwoord gewist om {tijd}"),
+                             daemon=True).start()
+            return self._json(200, {"ok": True})
+        try:
+            data = json.loads(body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            return self._json(400, {"fout": "geen geldige invoer"})
+        if not isinstance(data, dict) or set(data) != {"gebruiker", "wachtwoord"}:
+            return self._json(400, {"fout": "alleen gebruikersnaam en wachtwoord"})
+        fout = parro_inlog.controleer(data["gebruiker"], data["wachtwoord"])
+        if fout:
+            return self._json(400, {"fout": fout})
+        try:
+            parro_inlog.bewaar(data["gebruiker"], data["wachtwoord"])
+        except parro_inlog.AndereGebruiker:
+            # review MOET 1: de gebruikersnaam ligt vast; een andere kan pas na vrijgeven door de machinekamer
+            threading.Thread(target=lambda: webhook.alarm("parro", "wachtwoord", f"poging om {tijd} een ANDERE "
+                                                          "Parro-gebruikersnaam in de meeleespod te zetten (geweigerd)"),
+                             daemon=True).start()
+            return self._json(409, {"fout": "Er staat al een ander ParnasSys-account. Vraag de machinekamer dat eerst vrij te geven."})
+        except (OSError, ValueError) as e:
+            log("parro_wachtwoord_fout", code=type(e).__name__)
+            return self._json(500, {"fout": "bewaren lukte niet"})
+        finally:
+            data.clear()
+        threading.Thread(target=lambda: webhook.alarm("parro", "wachtwoord", f"Parro-wachtwoord in de meeleespod opgeslagen "
+                                                      f"om {tijd}; de pod doet nu één proefinlog"), daemon=True).start()
+        from . import parro
+        gestart = parro.start_proef()
+        return self._json(200, {"ok": True, "proef": gestart})
 
     # ---- websocket ↔ x11vnc (eigen brug; geen websockify nodig) -------------------------------------------------------
     def _ws(self, code):

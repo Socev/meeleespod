@@ -95,7 +95,62 @@ async function ververs() {
     blok.appendChild(m);
     bak.appendChild(blok);
   }
+  toonParroWw(s.parro_wachtwoord);
   document.getElementById('versie').textContent = 'versie ' + s.versie + (s.inlogvenster ? ' · er staat een inlogvenster open (' + s.inlogvenster.dienst + ')' : '');
 }
+// ---- Parro: zelf opnieuw inloggen (wv1951). Het formulier staat vast in de pagina (ververs() bouwt het niet om),
+// de stand toont alleen ja/nee, tijden en uitkomst; gebruikersnaam en wachtwoord komen nooit terug van de pod.
+const PROEF = {
+  OK: 'gelukt', GEWEIGERD: 'geweigerd door ParnasSys (klopt het wachtwoord?)', NIET_TERUG: 'niet terug in Parro na het inloggen',
+  GEEN_API: 'ingelogd, maar Parro haalde niets op', ANDERE_HOST: 'de inlogpagina van ParnasSys verscheen niet',
+  GEEN_INLOGPAGINA: 'de inlogpagina van ParnasSys verscheen niet', GEEN_VELD: 'geen invulveld gevonden',
+  FORMULIER: 'invullen mislukte', GEEN_WACHTWOORD: 'geen wachtwoord bewaard', SESSIE_NIET_WEG: 'proef zegt niets (sessie bleef staan)',
+  BROWSERSTART: 'browser startte niet', BEZET: 'browser bezet', FOUT: 'onbekende fout',
+};
+function toonParroWw(w) {
+  const st = document.getElementById('parro-ww-stand');
+  if (!w || !w.bewaard) { st.className = 'regel grijs'; st.textContent = 'Geen wachtwoord bewaard.' + (w && w.gewist ? ' Gewist op ' + tijd(w.gewist) + '.' : ''); return; }
+  let t = 'Bewaard op ' + tijd(w.gezet) + '.';
+  let cls = 'regel goed';
+  if (w.geweigerd) { t += ' ParnasSys weigerde het op ' + tijd(w.geweigerd) + ': vul het opnieuw in.'; cls = 'regel slecht'; }
+  else if (w.gepauzeerd) { t += ' Zelf inloggen mislukte ' + w.fouten_op_rij + ' keer op rij en staat uit: vul het opnieuw in.'; cls = 'regel slecht'; }
+  else if (w.budget_op) { t += ' Zelf inloggen mislukte ' + w.mislukt_24u + ' keer in 24 uur en wacht nu (bescherming tegen blokkeren van je account).'; cls = 'regel slecht'; }
+  if (w.proef) {
+    if (!w.proef.code) t += ' Proefinlog loopt…';
+    else t += ' Proefinlog ' + tijd(w.proef.tijd) + ': ' + (PROEF[w.proef.code] || w.proef.code) + '.';
+    if (w.proef.code && w.proef.code !== 'OK' && !w.geweigerd) cls = 'regel slecht';
+  } else if (!w.geweigerd && !w.gepauzeerd) t += ' Proefinlog loopt (± 1 minuut)…';
+  if (w.laatst_gelukt) t += ' Laatst zelf ingelogd: ' + tijd(w.laatst_gelukt) + '.';
+  st.className = cls;
+  st.textContent = t;
+}
+async function bewaarParroWw(ev) {
+  ev.preventDefault();
+  const g = document.getElementById('parro-ww-gebruiker');
+  const w = document.getElementById('parro-ww-wachtwoord');
+  const m = document.getElementById('parro-ww-melding');
+  const knop = document.getElementById('parro-ww-bewaar');
+  knop.disabled = true;
+  try {
+    const r = await fetch('/parro/wachtwoord', { method: 'POST', headers: { 'X-Meelees-Knop': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gebruiker: g.value, wachtwoord: w.value }) });
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      g.value = ''; w.value = '';
+      m.textContent = 'Bewaard. De pod probeert nu één keer zelf in te loggen in een lege browser (± 1 minuut); de uitkomst verschijnt hierboven.';
+    } else m.textContent = j.fout || 'Bewaren lukte niet.';
+  } catch (e) { m.textContent = 'Bewaren lukte niet.'; } finally { knop.disabled = false; ververs(); }
+}
+async function wisParroWw() {
+  const m = document.getElementById('parro-ww-melding');
+  try {
+    const r = await fetch('/parro/wachtwoord/wis', { method: 'POST', headers: { 'X-Meelees-Knop': '1' } });
+    m.textContent = r.ok ? 'Gewist.' : 'Wissen lukte niet.';
+  } catch (e) { m.textContent = 'Wissen lukte niet.'; } finally { ververs(); }
+}
+document.getElementById('parro-ww-form').addEventListener('submit', bewaarParroWw);
+document.getElementById('parro-ww-bewaar').disabled = false;   // pas aan als het formulier via JS gaat (review ZOU 5)
+document.getElementById('parro-ww-wis').addEventListener('click', wisParroWw);
+
 ververs();
 setInterval(ververs, 5000);

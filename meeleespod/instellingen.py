@@ -66,8 +66,10 @@ INLOGVENSTER_MAX_S = 10 * 60        # zichtbaar venster sluit uiterlijk na 10 mi
 VNC_CODE_GELDIG_S = 120             # eenmalige code: binnen 2 min gebruiken, één verbinding
 RONDE_REM_S = 10 * 60               # /api/ronde: 1x per 10 min per dienst
 LEVENSTEKEN_UUR = 6
-ALARM_HERHAAL_UUR = {"login": 24, "inlogvenster": 0, "vooraankondiging": 24 * 365}
-# login: bij de overgang en daarna hooguit 1x per 24 u; inlogvenster: elke start; vooraankondiging: één keer
+ALARM_HERHAAL_UUR = {"login": 24, "inlogvenster": 0, "vooraankondiging": 24 * 365, "wachtwoord": 1}
+# login: bij de overgang en daarna hooguit 1x per 24 u; inlogvenster: elke start; vooraankondiging: één keer;
+# wachtwoord (Parro, wv1951): wijziging/wissen, hooguit 1x per uur (geen alarmruis bij herhaald namaken);
+# wachtwoord-fout: weigering of rem, standaardinterval. Beide gaan naar de machinekamer (n8n: onbekende soort)
 ALARM_INTERVAL_UUR = 6              # overige alarmen: 1x per 6 u per soort (zoals de pc)
 VOORAANKONDIGING_DAGEN = 80         # Microsoft-inlogcookie leeft ± 90 dagen
 

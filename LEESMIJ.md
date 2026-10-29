@@ -81,6 +81,9 @@ Ook het inlogmoment wordt gemeten (`moment`: inlog/stil/ronde), zodat de eerste 
 heeft; de stand toont de laatste 4 metingen. Gemeten 29-10 03:41Z (11 u na de inlog): vernieuwen via
 `inloggen.parnassys.net/idp/oauth2/token` (grant refresh_token) gaf HTTP 400 → LOGIN_NODIG.
 
+**Parro zelf opnieuw inloggen** (wv1951, chart 0.0.10; David 29-10-2026 Ja op #parro-wachtwoord): zie de eigen sectie
+hieronder.
+
 Waarom eerst stil (review 27-10, MOET 1): Origin en Host bewijzen alleen iets tegenover een browser. Een proces in het
 clusternetwerk dat de pagina-poort bereikt, kan ze zelf invullen. Daarom kan zo'n proces hooguit een Microsoft-inlogpagina
 openen, nooit een ingelogd postvak.
@@ -194,3 +197,46 @@ Een openstaand inlogvenster blokkeert de inlogknoppen. De **hoofdpagina** toont 
 **Venster sluiten** (`POST /inloggen/stop`), naast de bestaande knop in het VNC-venster. `draai_vanger` stopt een net
 gestarte zichtbare vanger meteen als het venster in dat gaatje al gesloten blijkt (`code=GESTOPT`), zodat het
 browser-slot niet 10 min vast blijft (review-bevinding wv1736).
+
+## Parro: zelf opnieuw inloggen met het wachtwoord (sinds 0.0.10, wv1951)
+**Wat de doorslag gaf.** Gemeten 29-10-2026 11:16Z: het vernieuwtoken van ParnasSys is een JWT met `exp = iat + 8 u`, en
+stil vernieuwen verlengt dat niet (28-10: uitval 8 u na elke inlog, ook met tussendoor geslaagde vernieuwingen). Het
+wissen van het profiel (vangst.WIS_IN_PROFIEL) was dus niet de oorzaak: IndexedDB/WebStorage bleven voor Parro al staan,
+en de rest (caches) draagt geen sessie. Het verschil met de werk-pc was het **wachtwoord**: `parro_meelezen.py`
+(Socev/socev-pc) logde na "geen API-verkeer" eerst via de knop Inloggen (ParnasSys-SSO) en anders zelf in met
+gebruikersnaam + wachtwoord uit Windows Credential Manager (keyring). De pod doet nu precies die volgorde (`parro.herstel`):
+geen API-verkeer → klik Inloggen (luisteraar vóór de klik) → op de ParnasSys-inlogpagina zelf inloggen.
+- **Invoer**: alleen David, op de inlogpagina (blok "Parro: zelf opnieuw inloggen"; `POST /parro/wachtwoord` met de
+  knopkop + Origin, JSON via fetch; het formulier zelf kan niet als GET versturen: `method=post`, geen name-attributen,
+  knop pas aan na de JS, CSP `form-action 'none'`). Nooit terug te lezen; de stand toont alleen ja/nee, tijden, codes.
+- **Opslag**: `/geheim/parro/inlog.json` (0600, atomair; app-cache, niet in de NAS-back-up). `/staat/parro_inlog.json`
+  (per wachtwoord: versie, pogingen, proef) en `/staat/parro_inlog_budget.json` (mislukte verzendingen 24 u, HMAC van de
+  gebruikersnaam met eigen zout) bevatten geen naam of wachtwoord. Niets in log, alarm of webhook.
+- **Invullen alleen op `https://inloggen.parnassys.net`** (gemeten: velden `#signin-email`, `#signin-password` op `/idp/`):
+  host vooraf, daarna per veld via een element-handle het document van dat veld (hoofdframe, origin); na een doorverwijzing
+  faalt het invullen in plaats van elders te typen. Tweestaps en "Sessie verlopen" (alleen wachtwoordveld) zoals de pc.
+- **Geen accountblokkade**: weigering = zichtbare `.feedbackPanelERROR` NA het antwoord van ParnasSys op de verzending
+  (een oude melding telt niet) → `GEWEIGERD`, zelf inloggen meteen uit tot David opnieuw invult. Elke verzending telt
+  vóór het versturen als mislukt tot hij OK is (ook bij een crash): 3 op rij per wachtwoord → gepauzeerd; daarnaast
+  **3 per 24 u over alles heen**, en opnieuw invullen zet dat budget niet terug (review MOET 1: een ander proces op
+  Olares kan de knopkop namaken). Alarmen naar de machinekamer: `[parro/wachtwoord]` bij opslaan/wissen (≤ 1 per uur),
+  `[parro/wachtwoord-fout]` bij weigering, pauze of budget.
+- **Gebruikersnaam ligt vast** na de eerste keer (ook na wissen): een ander account geeft 409 tot de machinekamer
+  `POST /api/parro-gebruiker-vrij` doet (Socev-sleutel). Zo kan een namaakknop er geen eigen Parro-account in zetten.
+- **Proef** (zoals `--test-login` op de pc): na het opslaan en via `POST /api/parro-proef` (rem 10 min) draait de
+  herstelvolgorde in een **kopie van het profiel zonder IndexedDB (parro_db), cookies en webopslag**; het echte profiel
+  blijft ongemoeid, de kopie gaat altijd weg (ook resten van een afgebroken proef). Uitslag in `/api/stand` →
+  `diensten.parro.wachtwoord.proef` = `{tijd, code, route}` (route `wachtwoord` = echt zelf ingelogd). Lukt de proef
+  terwijl Parro uitgelogd staat, dan volgt meteen een ronde.
+- **Stand**: `diensten.parro.wachtwoord` (`bewaard`, `actief`, `geweigerd`, `gepauzeerd`, `budget_op`, `mislukt_24u`,
+  `laatste`, `laatst_gelukt`, `proef`); een ronde die zelf inlogde heeft `laatste_ronde.herinlog` = `sso`|`wachtwoord` en
+  zet `ingelogd_sinds` (geen onterechte vooraankondiging).
+- **Toetsen**: `tests/test_parro_wachtwoord.py` (opslag, budget, naam, routes) en `python -m meeleespod.inlogtoets` (in de
+  rooktest; lokaal met Playwright): nagemaakte Parro-, ParnasSys- en API-pagina's, alles in de browser onderschept,
+  verzonnen proefaccount, nooit een echte inlog. Scenario's: eenstaps, tweestaps, sessie verlopen, oude foutmelding,
+  fout wachtwoord (+ geen tweede poging), andere host, SSO, extra stap (pauze), blijvend profiel bevat naam noch
+  wachtwoord, proef in een profielkopie. Daarnaast lokaal één keer tegen de echte ParnasSys-pagina met een verzonnen
+  account (29-10): `GEWEIGERD` herkend, tweede poging bleef uit.
+- **Restrisico**: het wachtwoord staat leesbaar voor de pod-gebruiker in `/geheim` (geen aparte sleutel om mee te
+  versleutelen); wie de pod overneemt, heeft het. Een andere app op Olares kan het wachtwoord niet lezen, wel wissen of
+  een proef starten (alarm in de machinekamer).

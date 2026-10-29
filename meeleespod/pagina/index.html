@@ -16,6 +16,20 @@
     <button id="open-venster-sluit" type="button">Venster sluiten</button>
   </div>
   <div id="diensten"></div>
+  <section class="dienst" id="parro-ww">
+    <h2>Parro: zelf opnieuw inloggen</h2>
+    <p class="regel">Parro logt je na 8 uur uit. Met je ParnasSys-e-mailadres en wachtwoord logt de pod dan zelf weer in,
+    zoals de werk-pc deed. Ze blijven alleen in de pod en worden nooit meer getoond; opnieuw invullen vervangt het
+    wachtwoord. Na drie mislukte pogingen op een dag stopt de pod vanzelf, zodat je account niet blokkeert.</p>
+    <div class="regel" id="parro-ww-stand">—</div>
+    <form id="parro-ww-form" method="post" action="javascript:void 0" autocomplete="on">
+      <label class="veld">E-mailadres (ParnasSys)<input id="parro-ww-gebruiker" type="email" autocomplete="username" required maxlength="254"></label>
+      <label class="veld">Wachtwoord<input id="parro-ww-wachtwoord" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <button type="submit" id="parro-ww-bewaar" disabled>Bewaren en proberen</button>
+      <button type="button" id="parro-ww-wis" class="wis">Wissen</button>
+    </form>
+    <div class="regel" id="parro-ww-melding"></div>
+  </section>
   <p class="klein">Na een klik op Inloggen opent hieronder een venster met de inlogpagina. Het sluit vanzelf zodra je
   binnen bent, of na 10 minuten. Elke keer dat een venster opent, krijg je daar een melding van.</p>
   <p class="klein" id="versie"></p>

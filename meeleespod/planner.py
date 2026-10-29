@@ -181,6 +181,9 @@ def draai(dienst, handmatig=False):
             velden["laatste_met_berichten"] = ronde["tijd"]
         if dienst == "parro" and uit.get("geldig_tot"):
             velden["geldig_tot"] = uit["geldig_tot"]
+        if dienst == "parro" and uit.get("herinlog") == "wachtwoord":
+            # wv1951 (review KAN 9): zelf opnieuw ingelogd = een verse inlog (geen onterechte vooraankondiging na 80 dagen)
+            velden.update(ingelogd_sinds=ronde["tijd"], vooraankondiging=None)
     else:
         velden["laatste_fout"] = {**_fout(uit, str(uit.get("status"))), "tijd": ronde["tijd"]}
     zet(dienst, **velden)

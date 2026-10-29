@@ -3,7 +3,9 @@
 Wat anders is dan op de pc (ontwerp § 4, parro-lezer):
 - socev_pc.py → meeleespod: datamap = /staat (gezien-lijst) en /geheim/parro (browserprofiel), sleutel via /api/koppel,
   versie = image-commit.
-- Geen opgeslagen wachtwoord (de keyring-route vervalt): verlopen = één alarm + inloggen via de inlogpagina.
+- Wachtwoord (wv1951, David 29-10 Ja): niet uit Windows Credential Manager maar uit /geheim/parro/inlog.json, door David
+  zelf ingevuld op de inlogpagina (parro_inlog.py). Herstelvolgorde zoals de pc: geen API-verkeer → klik 'Inloggen'
+  (ParnasSys-SSO) → op de ParnasSys-inlogpagina zelf inloggen. Zonder bewaard wachtwoord: één alarm + inlogpagina.
 - Geen HTML-overzicht, geen schermafdruk, geen ontdek-map: er komt geen Parro-tekst op schijf.
 - Alle API-aanroepen gaan eerst langs het vangnet (alleen GET naar rest-v2.parro.com, geen redirects).
 - Zaaien (ontwerp § 8.2): de eerste ronde zet alles van vóór de laatste pc-ronde op gezien zonder te versturen.
@@ -13,12 +15,17 @@ import base64
 import hashlib
 import html
 import json
+import os
 import re
+import secrets
+import signal
+import shutil
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
 from . import instellingen as I
-from . import staat, vangnet, vangst, webhook
+from . import parro_inlog, staat, vangnet, vangst, webhook
 from .logboek import log
 
 APP_URL = "https://talk.parro.com/"
@@ -29,6 +36,7 @@ STATE_BEWAAR_DAGEN = 120
 AGENDA_DAGEN_VOORUIT = 120
 CHAT_BERICHTEN = 30
 HEADERS_WACHT_SEC = 90
+KLIK_HEADERS_S = 45          # na de klik op 'Inloggen': zoveel seconden op API-verkeer wachten (SSO)
 POPUP_HOSTS = (re.compile(r"(^|\.)parro\.com$", re.I), re.compile(r"(^|\.)parnassys\.net$", re.I))
 INTERN = ("aangemaakt",)   # velden die de pod zelf gebruikt en niet meestuurt (payload blijft gelijk aan de pc)
 
@@ -52,7 +60,8 @@ def dedupe(items):
     return uit
 
 
-def vang_headers(page, seconden=45):
+def luister_headers(page):
+    """Begint te luisteren; het dict vult zich bij de eerste API-aanroep van de app zelf."""
     gevangen = {}
 
     def on_request(req):
@@ -61,6 +70,12 @@ def vang_headers(page, seconden=45):
                 if req.headers.get(k):
                     gevangen[k] = req.headers[k]
     page.on("request", on_request)
+    return gevangen
+
+
+def vang_headers(page, seconden=45, gevangen=None):
+    if gevangen is None:
+        gevangen = luister_headers(page)
     t0 = time.time()
     while time.time() - t0 < seconden and not gevangen:
         page.wait_for_timeout(500)
@@ -82,13 +97,158 @@ def token_info(headers):
 
 
 def klik_inloggen(page):
-    """Welkomstscherm van de app: 'Inloggen' (Flutter-canvas, vaste positie bij viewport 1100x900)."""
+    """Welkomstscherm van de app: 'Inloggen' (Flutter-canvas, vaste positie bij viewport 1100x900). Leeft de SSO-sessie
+    bij ParnasSys nog, dan is de app zonder wachtwoord weer binnen; anders wachten tot de inlogpagina er staat (pc)."""
+    gevangen = luister_headers(page)   # vóór de klik: een snelle SSO-terugkeer doet zijn eerste API-aanroep binnen 4 s
     try:
         page.mouse.click(550, 570)
         page.wait_for_timeout(4000)
     except Exception:
         return {}
-    return vang_headers(page, 45)
+    headers = vang_headers(page, KLIK_HEADERS_S, gevangen)
+    if headers:
+        return headers
+    try:
+        if _host(page) == APP_HOST:
+            page.wait_for_url(re.compile(r"parnassys|login|oauth"), timeout=15000)
+    except Exception:
+        pass
+    return {}
+
+
+# ---- zelf inloggen met het bewaarde wachtwoord (wv1951; pc: probeer_inloggen + keyring_login) ------------------------
+APP_HOST = "talk.parro.com"
+INLOG_HOST = "inloggen.parnassys.net"   # gemeten 29-10: formulier #signin-email + #signin-password op /idp/
+GEBRUIKER_VELD = ("#signin-email:visible, input[name='emailadres']:visible, input[type='email']:visible, "
+                  "input[autocomplete='username']:visible, input[name*='user' i]:visible, input[name*='login' i]:visible, "
+                  "input[type='text']:visible")
+WACHTWOORD_VELD = "input[type='password']:visible"
+FOUTMELDING = ".feedbackPanelERROR:visible"   # gemeten 29-10 met een verzonnen account: "…onjuist of je account is inactief"
+TERUG_WACHT_S = 60
+
+
+def _host(page):
+    """Host van de pagina, alleen bij https (anders leeg)."""
+    try:
+        from urllib.parse import urlsplit
+        u = urlsplit(page.url)
+        return (u.hostname or "").lower() if u.scheme == "https" else ""
+    except Exception:
+        return ""
+
+
+def _veld_hier(h, page):
+    """Het veld hoort bij het hoofdframe van een document op https://inloggen.parnassys.net (review ZOU 4: een handle
+    hoort bij precies dat document; na een doorverwijzing faalt fill op de handle in plaats van elders in te vullen)."""
+    try:
+        return (h is not None and h.owner_frame() == page.main_frame
+                and h.evaluate("e => e.ownerDocument.location.origin") == "https://" + INLOG_HOST)
+    except Exception:
+        return False
+
+
+def probeer_inloggen(page, login, voor_verzenden=None, terug_wacht_s=None):
+    """Vult het ParnasSys-formulier in, ALLEEN op https://inloggen.parnassys.net (host vooraf, daarna per veld het
+    document van de handle): één- of tweestaps, en bij "Sessie verlopen" alleen het wachtwoordveld (alleen zichtbare
+    velden, zoals de pc). voor_verzenden() wordt vlak vóór het versturen aangeroepen (telling, zie parro_inlog).
+    Geeft (headers, code, verzonden) met code uit parro_inlog.CODES; nooit fouttekst."""
+    gebruiker, wachtwoord = login[0], login[1]
+    verzonden = None
+    if _host(page) != INLOG_HOST:
+        return {}, "ANDERE_HOST", None
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=20000)
+        page.wait_for_timeout(1500)
+        if _host(page) != INLOG_HOST:
+            return {}, "ANDERE_HOST", None
+        gv = page.locator(GEBRUIKER_VELD).first
+        ww = page.locator(WACHTWOORD_VELD).first
+        if gv.count():
+            hg = gv.element_handle(timeout=10000)
+            if not _veld_hier(hg, page):
+                return {}, "ANDERE_HOST", None
+            hg.fill(gebruiker, timeout=10000)
+            if not ww.count():
+                hg.press("Enter")   # tweestaps: eerst de gebruikersnaam
+                page.wait_for_selector(WACHTWOORD_VELD, timeout=15000)
+                ww = page.locator(WACHTWOORD_VELD).first
+        elif not ww.count():
+            return {}, "GEEN_VELD", None
+        hw = ww.element_handle(timeout=10000)
+        if not _veld_hier(hw, page):
+            return {}, "ANDERE_HOST", None
+        gevangen = luister_headers(page)
+        # review ZOU 2: een foutmelding die er al stond (bv. bij "Sessie verlopen") mag niet als weigering tellen. Een
+        # melding telt pas als ParnasSys op het verstuurde formulier geantwoord heeft (POST naar de inloghost, als
+        # paginaverzoek of via Wicket-Ajax); het paneel zelf laten we staan (Wicket kan precies dat element vervangen).
+        geantwoord = []
+
+        def op_antwoord(r):
+            try:
+                from urllib.parse import urlsplit
+                if r.request.method not in LEZENDE_METHODEN and (urlsplit(r.url).hostname or "").lower() == INLOG_HOST:
+                    geantwoord.append(time.time())
+            except Exception:
+                pass
+        page.on("response", op_antwoord)
+        hw.fill(wachtwoord, timeout=10000)
+        if voor_verzenden:
+            verzonden = voor_verzenden()
+        hw.press("Enter")
+    except Exception:
+        return {}, "FORMULIER", verzonden
+    t0, terug_wacht_s = time.time(), terug_wacht_s or TERUG_WACHT_S
+    while time.time() - t0 < terug_wacht_s and not gevangen:
+        if _host(page) == INLOG_HOST and geantwoord and time.time() - geantwoord[0] > 1:
+            try:
+                if page.locator(FOUTMELDING).count():
+                    return {}, "GEWEIGERD", verzonden
+            except Exception:
+                pass
+        elif _host(page) == APP_HOST:
+            break
+        try:
+            page.wait_for_timeout(500)
+        except Exception:
+            break
+    if not gevangen and _host(page) == APP_HOST:
+        try:
+            vang_headers(page, HEADERS_WACHT_SEC, gevangen)
+        except Exception:
+            pass
+    if gevangen:
+        return dict(gevangen), "OK", verzonden
+    return {}, "GEEN_API" if _host(page) == APP_HOST else "NIET_TERUG", verzonden
+
+
+def herstel(page, moment):
+    """Geen API-verkeer na het openen: de herstelvolgorde van de pc. Geeft (headers, route, code): route sso|wachtwoord|None,
+    code = uitkomst van de wachtwoordpoging (parro_inlog.CODES) of GEEN_INLOGPAGINA / GEEN_WACHTWOORD."""
+    soort = waarom_geen_headers(page)
+    if soort == "geen_api":
+        headers = klik_inloggen(page)
+        if headers:
+            return headers, "sso", "OK"
+        soort = waarom_geen_headers(page)
+    if soort != "uitgelogd":
+        return {}, None, "GEEN_INLOGPAGINA"
+    login = parro_inlog.lees()
+    if not login:
+        return {}, None, "GEEN_WACHTWOORD"
+    headers, code, verzonden = probeer_inloggen(page, login, lambda: parro_inlog.voor_verzenden(login[2]))
+    stand = parro_inlog.registreer(code, login[2], moment, verzonden)
+    if code != "OK" and verzonden:
+        tekst = None
+        if code == "GEWEIGERD":
+            tekst = "het bewaarde Parro-wachtwoord werd door ParnasSys geweigerd"
+        elif stand and stand.get("gepauzeerd"):
+            tekst = f"zelf inloggen bij Parro mislukte {parro_inlog.MAX_FOUTEN} keer op rij"
+        elif stand and stand.get("budget_op"):
+            tekst = f"zelf inloggen bij Parro mislukte {parro_inlog.BUDGET} keer in 24 uur (rem tegen accountblokkade)"
+        if tekst:
+            webhook.alarm("parro", "wachtwoord-fout", tekst + "; zelf inloggen staat uit tot het wachtwoord op de "
+                          "inlogpagina van de meeleespod opnieuw is ingevuld (of na 24 uur, bij de rem)")
+    return (headers, "wachtwoord", code) if headers else ({}, None, code)
 
 
 def waarom_geen_headers(page):
@@ -448,15 +608,17 @@ class _PostVanger:
         return uit
 
 
-def _open(pw, headless):
+def _open(pw, headless, profiel=None):
+    """profiel=None: het echte Parro-profiel; anders een (proef)kopie."""
     d = vangst.dienstmap("parro")
     args = ["--disable-blink-features=AutomationControlled", "--no-first-run", "--disable-sync"]
     if not headless:
         args += ["--kiosk", "--window-position=0,0", "--window-size=1280,900"]
-    vangst.ruim_profielslot("parro")   # wv1950: wees-Chromium/slot van een vorige pod weg; profiel blijft (BEHOUD_IN_PROFIEL)
+    if profiel is None:
+        vangst.ruim_profielslot("parro")   # wv1950: wees-Chromium/slot van een vorige pod weg; profiel blijft (BEHOUD_IN_PROFIEL)
     try:
         ctx = pw.chromium.launch_persistent_context(
-            str(d / "profiel"), headless=headless, viewport={"width": 1100, "height": 900} if headless else None,
+            str(profiel or d / "profiel"), headless=headless, viewport={"width": 1100, "height": 900} if headless else None,
             locale="nl-NL", args=args, accept_downloads=False)
     except Exception as e:
         raise vangst.BrowserStartFout(vangst.browser_subcode(str(e))) from None
@@ -525,8 +687,8 @@ def inloggen_stil():
             vanger = _PostVanger(page)
             page.goto(APP_URL)
             headers = vang_headers(page, 45)
-            if not headers and waarom_geen_headers(page) == "geen_api":
-                headers = klik_inloggen(page)
+            if not headers:
+                headers, _route, _code = herstel(page, "stil")
             if _bewaar_sessiemeting(vanger, headers or {}, "stil").get("vernieuwd"):
                 page.wait_for_timeout(NA_VERNIEUW_WACHT_MS)
         finally:
@@ -566,8 +728,9 @@ def ronde():
                 vanger = _PostVanger(page)
                 page.goto(APP_URL)
                 headers = vang_headers(page, HEADERS_WACHT_SEC)
-                if not headers and waarom_geen_headers(page) == "geen_api":
-                    headers = klik_inloggen(page)
+                route = None
+                if not headers:
+                    headers, route, _code = herstel(page, "ronde")
                 if not headers:
                     sessie = _bewaar_sessiemeting(vanger, {})
                     return {"status": "login_nodig", "sessie": sessie}
@@ -597,8 +760,123 @@ def ronde():
     staat.schrijf("parro", st)
     uit["geldig_tot"] = info.get("exp")
     uit["sessie"] = sessie
+    if route:
+        uit["herinlog"] = route   # sso | wachtwoord: deze ronde moest eerst opnieuw inloggen
     if uit["status"] == "geen_groepen":
         webhook.alarm("parro", "groepen", "geen groepen gevonden in het API-antwoord; uitlezer afstellen")
     elif uit["verstuurd"] == 0 and uit["status"] == "ok":
         webhook.levensteken("parro", {"gezien": uit["gezien"], "nieuw": 0, "groepen": uit["groepen"]})
+    return uit
+
+
+# ---- proef: gesimuleerd verlopen sessie (wv1951; pc: --test-login) -------------------------------------------------------
+# Een kopie van het profiel ZONDER parro_db (IndexedDB), cookies en webopslag: de app is dan uitgelogd en de
+# ParnasSys-SSO ook. Daarin de herstelvolgorde draaien. Het echte profiel blijft ongemoeid; de kopie gaat altijd weg.
+PROEF_ZONDER = frozenset({"IndexedDB", "Local Storage", "Session Storage", "Sessions", "Cookies", "Cookies-journal",
+                          "Service Worker", "Cache", "Code Cache", "GPUCache", "File System", "WebStorage", "blob_storage",
+                          "shared_proto_db", "SingletonLock", "SingletonSocket", "SingletonCookie"})
+
+
+def _proef_negeer(_map, namen):
+    return [n for n in namen if n in PROEF_ZONDER]
+
+
+_proef_slot = threading.Lock()
+_proef_opnieuw = threading.Event()
+
+
+def start_proef():
+    """Proef op de achtergrond (na het bewaren of via /api/parro-proef); hooguit één tegelijk. Wordt er tijdens een
+    lopende proef opnieuw gevraagd (nieuw wachtwoord), dan volgt er na afloop nog één (review ZOU 6). Lukt hij terwijl
+    Parro uitgelogd staat, dan meteen een ronde: die logt dan in het echte profiel zelf opnieuw in."""
+    if not _proef_slot.acquire(blocking=False):
+        _proef_opnieuw.set()
+        return True
+
+    def loop():
+        try:
+            while True:
+                _proef_opnieuw.clear()
+                uit = proef_inlog()
+                if not _proef_opnieuw.is_set():
+                    break
+            from . import planner
+            if uit.get("code") == "OK" and planner.stand()["parro"].get("login_nodig"):
+                planner.vraag_ronde("parro")
+        except Exception as e:
+            log("parro_proef_fout", code=type(e).__name__)
+        finally:
+            _proef_slot.release()
+    try:
+        threading.Thread(target=loop, daemon=True).start()
+    except Exception:
+        _proef_slot.release()
+        raise
+    return True
+
+
+def _ruim_oude_proefkopieen(d):
+    """Review KAN 10: een proef die door een podstop werd afgebroken laat een kopie (en misschien een Chromium) achter."""
+    for oud in d.glob("proefprofiel-*"):
+        for pid in vangst._profiel_pids(oud):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        shutil.rmtree(oud, ignore_errors=True)
+
+
+def proef_inlog():
+    """Geeft {"code", "route"}; code OK alleen als de app na zelf inloggen eigen API-verkeer deed. Ook in parro_inlog
+    (bij het wachtwoord waarmee geproefd is)."""
+    from playwright.sync_api import sync_playwright
+    login = parro_inlog.lees()
+    if not login:
+        uit = {"code": "GEEN_WACHTWOORD", "route": "geen"}
+        parro_inlog.zet_proef(uit)
+        return uit
+    versie = login[2]
+    if not vangst.browser_slot.acquire(timeout=600):
+        uit = {"code": "BEZET", "route": "geen"}
+        parro_inlog.zet_proef(uit, versie)
+        return uit
+    kopie = None
+    uit = {"code": "FOUT", "route": "geen"}
+    try:
+        d = vangst.dienstmap("parro")
+        _ruim_oude_proefkopieen(d)
+        kopie = d / f"proefprofiel-{secrets.token_hex(4)}"
+        if (d / "profiel").is_dir():
+            shutil.copytree(d / "profiel", kopie, symlinks=True, ignore=_proef_negeer)
+        else:
+            kopie.mkdir(mode=0o700)
+        with sync_playwright() as pw:
+            ctx = _open(pw, headless=True, profiel=kopie)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(APP_URL)
+                headers = vang_headers(page, KLIK_HEADERS_S)
+                if headers:
+                    uit = {"code": "SESSIE_NIET_WEG", "route": "geen"}   # de kopie was nog ingelogd: proef zegt niets
+                else:
+                    headers, route, code = herstel(page, "proef")
+                    uit = {"code": "OK" if headers else code, "route": route or "geen"}
+            finally:
+                ctx.close()
+    except vangst.BrowserStartFout as e:
+        uit = {"code": "BROWSERSTART", "route": "geen", "sub": e.sub}
+    except Exception as e:
+        uit = {"code": "FOUT", "route": "geen"}
+        log("parro_proef_fout", code=type(e).__name__)
+    finally:
+        if kopie is not None:
+            for pid in vangst._profiel_pids(kopie):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            shutil.rmtree(kopie, ignore_errors=True)
+        vangst.browser_slot.release()
+    parro_inlog.zet_proef(uit, versie)
+    log("parro_proef", code=uit["code"], stap=uit["route"])
     return uit

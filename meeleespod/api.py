@@ -5,6 +5,10 @@ Alleen met Socevs sleutel (in de chart alleen de sha256). Geeft NOOIT mail- of b
   POST /api/ronde?dienst=outlook|teams|parro       nu een ronde (rem 1x per 10 min per dienst)
   POST /api/koppel   {"meelees": "...", "parro": "..."}   alleen de webhooksleutels; een adres zetten kan niet
   POST /api/modus?dienst=...&modus=proef|live|uit   proef = n8n classificeert maar bewaart niets (ontwerp § 8.1)
+  POST /api/parro-proef                            zelf inloggen bij Parro proberen in een profielkopie zonder sessie
+                                                   (wv1951; rem 1x per 10 min); uitkomst in stand → parro.wachtwoord
+  POST /api/parro-gebruiker-vrij                   vastgezette Parro-gebruikersnaam loslaten (een ander account mag
+                                                   daarna één keer op de inlogpagina gezet worden; review MOET 1)
   GET  /gezond                                     zonder sleutel
 De inlogpagina en het inlogvenster zitten NIET op deze poort.
 """
@@ -18,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from . import instellingen as I
-from . import planner, staat, vangnet, vangst
+from . import parro_inlog, planner, staat, vangnet, vangst
 from .logboek import log
 
 MAX_BODY = 4096
@@ -44,12 +48,14 @@ def stand_openbaar():
             "aan": I.DIENST_AAN[d], "modus": x.get("modus"), "sleutel_gezet": bool(sl.get(I.SLEUTEL_VOOR[d])),
             "ingelogd_sinds": x.get("ingelogd_sinds"), "geldig_tot": x.get("geldig_tot"),
             "login_nodig": bool(x.get("login_nodig")),
-            "laatste_ronde": {k: v for k, v in lr.items() if isinstance(v, (int, float)) or k in ("tijd", "status", "modus", "code", "ids")},
+            "laatste_ronde": {k: v for k, v in lr.items() if isinstance(v, (int, float)) or k in ("tijd", "status", "modus", "code", "ids", "herinlog")},
             "laatste_met_berichten": x.get("laatste_met_berichten"), "laatste_fout": x.get("laatste_fout"),
         }
         if d == "parro":
             # wv1911: sessiemeting (namen, tijden, statussen, korte hashes) van de laatste 4 inlog-/rondemomenten
             uit["diensten"][d]["sessie"] = (staat.lees("parro_sessie").get("reeks") or [])[-4:]
+            # wv1951: bewaard wachtwoord voor zelf opnieuw inloggen (alleen ja/nee, tijden, codes)
+            uit["diensten"][d]["wachtwoord"] = parro_inlog.stand()
         if d == "teams" and "graph_mail_read" in x:
             uit["diensten"][d]["graph_mail_read"] = x["graph_mail_read"]
             uit["diensten"][d]["audiences"] = x.get("audiences")
@@ -108,7 +114,8 @@ class Api(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlsplit(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        if u.path not in ("/api/ronde", "/api/koppel", "/api/modus"):
+        if u.path not in ("/api/ronde", "/api/koppel", "/api/modus", "/api/parro-proef",
+                          "/api/parro-gebruiker-vrij"):
             return self._json(404, {"fout": "onbekend"})
         if not self._toegang():
             return
@@ -125,6 +132,20 @@ class Api(BaseHTTPRequestHandler):
             planner.vraag_ronde(d)
             log("api_ronde", dienst=d)
             return self._json(202, {"ok": True, "dienst": d})
+        if u.path == "/api/parro-gebruiker-vrij":
+            parro_inlog.gebruiker_vrijgeven()
+            return self._json(200, {"ok": True})
+        if u.path == "/api/parro-proef":
+            if time.time() - _rem.get("parro-proef", 0) < I.RONDE_REM_S:
+                return self._json(429, {"fout": "hooguit één proef per 10 minuten"})
+            if not parro_inlog.stand()["actief"]:
+                return self._json(409, {"fout": "geen bruikbaar Parro-wachtwoord bewaard"})
+            from . import parro
+            if not parro.start_proef():
+                return self._json(409, {"fout": "er loopt al een proef"})
+            _rem["parro-proef"] = time.time()
+            log("api_parro_proef", status="ok")
+            return self._json(202, {"ok": True})
         if u.path == "/api/modus":
             if not planner.zet_modus(q.get("dienst"), q.get("modus")):
                 return self._json(400, {"fout": "dienst outlook|teams|parro en modus proef|live|uit"})

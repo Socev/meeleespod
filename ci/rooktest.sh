@@ -33,6 +33,10 @@ eis "geen x11vnc zonder klik" "$(docker exec meelees-rook sh -c 'cat /proc/[0-9]
 eis "geen sessie- of profielbestanden zonder inlog" "$(sudo find "$M/geheim" -type f | wc -l | tr -d ' ')" 0
 docker exec meelees-rook python3 -m meeleespod zelftoets
 docker exec meelees-rook python3 -m meeleespod beleidtoets
+# wv1951: Parro zelf opnieuw inloggen tegen nagemaakte pagina's (alles onderschept, verzonnen proefaccount, geen netwerk)
+docker exec -e HOME=/tmp/thuis-inlogtoets meelees-rook python3 -m meeleespod.inlogtoets | tee /tmp/inlogtoets.uit
+grep -q '^inlogtoets: GESLAAGD$' /tmp/inlogtoets.uit || { echo "::error::inlogtoets niet geslaagd"; exit 1; }
+if grep -qE 'Verzonnen-Proef-1|proefaccount@voorbeeld' /tmp/inlogtoets.uit; then echo "::error::proefinlog in de uitvoer"; exit 1; fi
 docker exec meelees-rook sh -c 'node /app/vanger/dist/vanger/src/vanger.js; echo "exit=$?"' | tee /tmp/vanger.uit
 if grep -q '"code":"GEBRUIK"' /tmp/vanger.uit && grep -q '^exit=1$' /tmp/vanger.uit; then echo "  OK    vanger laadt (zonder opdracht: GEBRUIK)"; else echo "::error::vanger laadt niet goed"; exit 1; fi
 docker exec meelees-rook node -e "require('/app/vanger/dist/vendor/outlook-access/src/auth/browser-capture.js'); require('/app/vanger/dist/vendor/teams-access/src/auth/browser-capture.js'); console.log('  OK    vangmodules laden (playwright gevonden)')"
