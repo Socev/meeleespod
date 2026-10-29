@@ -295,7 +295,7 @@ def verwerk(items, groepen, st, stuur, volledig=True):
 NA_VERNIEUW_WACHT_MS = 10000      # na een geziene vernieuwing de app de tijd geven om parro_db weg te schrijven
 _NAAM = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
 LEZENDE_METHODEN = ("GET", "HEAD", "OPTIONS")   # alleen kijken naar wat de app zelf schrijvend doet (de vernieuwing)
-GOOGLE_HOST = re.compile(r"(^|\.)(googleapis\.com|google\.com|gstatic\.com|firebaseio\.com|firebase\.googleapis\.com)$", re.I)
+GOOGLE_HOST = re.compile(r"(^|\.)(googleapis\.com|google\.com|gstatic\.com|firebaseio\.com|firebase\.googleapis\.com|google-analytics\.com)$", re.I)
 _TIJDNAAM = re.compile(r"(exp|valid|ttl|lifetime|until|tot)", re.I)
 
 
@@ -369,14 +369,18 @@ def meet_vernieuwing(posts, vorige=None, nu=None):
     vorige = de vorige meting (voor rotatie_bewaard). Geeft alleen namen, tijden, statussen en korte hashes."""
     uit = {"tijd": nu or datetime.now(timezone.utc).isoformat(), "posts": len(posts),
            "paden": sorted({_pad(p[0]) for p in posts})[:6], "vernieuwd": False}
-    for url, status, vt, at in posts:
+    for post in posts:
+        url, status, vt, at = post[:4]
         v, a = _lichaam(vt), _lichaam(at)
         rt_uit, rt_in = _vernieuwtoken(v), _vernieuwtoken(a)
         if not (rt_uit or rt_in or "refresh" in (vt or "").lower()):
             continue
         uit.update(vernieuwd=bool(rt_in), pad=_pad(url), http=status, verzoek_velden=_namen(v),
                    antwoord_velden=_namen(a), rt_uit=_h8(rt_uit), rt_in=_h8(rt_in),
-                   antwoord_tijden={**_getallen(a), **_tijdteksten(a)}, rt_tijden=_jwt_tijden(rt_in or ""))
+                   antwoord_tijden={**_getallen(a), **_tijdteksten(a)}, rt_tijden=_jwt_tijden(rt_in or ""),
+                   antwoord_lengte=len(at or ""))
+        if len(post) > 4 and post[4]:
+            uit["antwoord_soort"] = re.sub(r"[^a-z0-9/+.-]", "", str(post[4]).split(";")[0].strip().lower())[:40]
         fout = a.get("error") or a.get("code")
         if isinstance(fout, str) and re.match(r"^[A-Za-z_.-]{1,40}$", fout):
             uit["fout"] = fout
@@ -436,7 +440,11 @@ class _PostVanger:
                 at = r.text() if len(vt) < 100000 else ""
             except Exception:
                 at = ""
-            uit.append((r.url, r.status, vt, at[:200000]))
+            try:
+                soort = r.headers.get("content-type", "")
+            except Exception:
+                soort = ""
+            uit.append((r.url, r.status, vt, at[:200000], soort))
         return uit
 
 
@@ -490,8 +498,11 @@ def inloggen_zichtbaar(max_s):
         ctx = _open(pw, headless=False)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            vanger = _PostVanger(page)
             page.goto(APP_URL)
             headers = vang_headers(page, max_s)
+            if headers and _bewaar_sessiemeting(vanger, headers, "inlog").get("vernieuwd"):
+                page.wait_for_timeout(NA_VERNIEUW_WACHT_MS)
         finally:
             ctx.close()
     if headers:
@@ -507,10 +518,13 @@ def inloggen_stil():
         ctx = _open(pw, headless=True)
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            vanger = _PostVanger(page)
             page.goto(APP_URL)
             headers = vang_headers(page, 45)
             if not headers and waarom_geen_headers(page) == "geen_api":
                 headers = klik_inloggen(page)
+            if _bewaar_sessiemeting(vanger, headers or {}, "stil").get("vernieuwd"):
+                page.wait_for_timeout(NA_VERNIEUW_WACHT_MS)
         finally:
             ctx.close()
     if headers:
@@ -518,13 +532,13 @@ def inloggen_stil():
     return 4, {"ok": False, "code": "LOGIN_NODIG"}
 
 
-def _bewaar_sessiemeting(vanger, headers):
+def _bewaar_sessiemeting(vanger, headers, moment="ronde"):
     """Meting van deze ronde in /staat/parro_sessie.json (laatste 24) en terug voor de stand. Faalt nooit de ronde."""
     try:
         oud = staat.lees("parro_sessie")
         reeks = oud.get("reeks") or []
         m = meet_vernieuwing(vanger.posts(), reeks[-1] if reeks else None)
-        m.update(toegang_claims(headers))
+        m.update(toegang_claims(headers), moment=moment)
         staat.schrijf("parro_sessie", {"reeks": (reeks + [m])[-24:]})
         log("parro_sessie", status="vernieuwd" if m.get("vernieuwd") else "geen_vernieuwing", aantal=m.get("posts"),
             http=m.get("http") or 0, code=str(m.get("fout") or "-"),

@@ -128,3 +128,10 @@ def test_toegang_claims_alleen_namen():
     c = parro.toegang_claims({"authorization": "Bearer " + at})
     assert c["claims"] == ["auth_time", "email", "exp", "iss"] and c["iss_host"] == "inlog.voorbeeld.test"
     assert "a@b.c" not in _json.dumps(c)
+
+
+def test_sessiemeting_antwoordsoort_en_lengte():
+    m = parro.meet_vernieuwing([("https://inloggen.voorbeeld.test/idp/oauth2/token", 400,
+                                 "grant_type=refresh_token&refresh_token=verzonnen-vernieuwtoken-0000", "", "text/html; charset=utf-8")])
+    assert m["http"] == 400 and m["antwoord_soort"] == "text/html" and m["antwoord_lengte"] == 0 and not m["vernieuwd"]
+    assert m["verzoek_velden"] == ["grant_type", "refresh_token"]

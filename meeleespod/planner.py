@@ -152,8 +152,6 @@ def draai(dienst, handmatig=False):
     uit["duur_s"] = round(time.time() - t0, 1)
     ronde = {"tijd": nu_iso(), **{k: v for k, v in uit.items() if isinstance(v, (int, float, str)) or v is None}}
     velden = {"laatste_ronde": ronde}
-    if dienst == "parro" and isinstance(uit.get("sessie"), dict):
-        velden["sessie"] = uit["sessie"]   # wv1911: sessiemeting (namen, tijden, korte hashes)
     if uit.get("status") == "niet_ingelogd":
         # review MOET 3: sessiebestand weg (app-cache leeg na upgrade/herplaatsing) terwijl er ooit is ingelogd
         login_nodig(dienst)

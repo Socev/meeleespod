@@ -47,8 +47,9 @@ def stand_openbaar():
             "laatste_ronde": {k: v for k, v in lr.items() if isinstance(v, (int, float)) or k in ("tijd", "status", "modus", "code", "ids")},
             "laatste_met_berichten": x.get("laatste_met_berichten"), "laatste_fout": x.get("laatste_fout"),
         }
-        if d == "parro" and isinstance(x.get("sessie"), dict):
-            uit["diensten"][d]["sessie"] = x["sessie"]
+        if d == "parro":
+            # wv1911: sessiemeting (namen, tijden, statussen, korte hashes) van de laatste 4 inlog-/rondemomenten
+            uit["diensten"][d]["sessie"] = (staat.lees("parro_sessie").get("reeks") or [])[-4:]
         if d == "teams" and "graph_mail_read" in x:
             uit["diensten"][d]["graph_mail_read"] = x["graph_mail_read"]
             uit["diensten"][d]["audiences"] = x.get("audiences")

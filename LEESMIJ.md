@@ -76,7 +76,10 @@ lukte. Elke ronde bewaart nu in `/staat/parro_sessie.json` (laatste 24) en in `/
 namen, tijden, statussen en een hash van 8 hex per vernieuwtoken: welke POST de vernieuwing deed, `antwoord_tijden`
 (bv. `refresh_expires_in`), `rt_tijden` (als het vernieuwtoken een JWT is), claimnamen en `auth_time` van het
 toegangstoken, en `rotatie_bewaard` (stuurde deze ronde het vernieuwtoken dat de vorige ronde kreeg?). Na een geziene
-vernieuwing wacht de ronde 10 s vóór het sluiten, zodat de app het nieuwe token in `parro_db` kan wegschrijven.
+vernieuwing wacht de ronde (en het inloggen) 10 s vóór het sluiten, zodat de app het nieuwe token in `parro_db` kan wegschrijven.
+Ook het inlogmoment wordt gemeten (`moment`: inlog/stil/ronde), zodat de eerste ronde na een inlog al `rotatie_bewaard`
+heeft; de stand toont de laatste 4 metingen. Gemeten 29-10 03:41Z (11 u na de inlog): vernieuwen via
+`inloggen.parnassys.net/idp/oauth2/token` (grant refresh_token) gaf HTTP 400 → LOGIN_NODIG.
 
 Waarom eerst stil (review 27-10, MOET 1): Origin en Host bewijzen alleen iets tegenover een browser. Een proces in het
 clusternetwerk dat de pagina-poort bereikt, kan ze zelf invullen. Daarom kan zo'n proces hooguit een Microsoft-inlogpagina
