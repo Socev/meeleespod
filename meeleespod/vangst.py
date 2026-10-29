@@ -110,6 +110,8 @@ SLOTBESTANDEN = ("SingletonLock", "SingletonSocket", "SingletonCookie")
 # Subcode bij BROWSERSTART: vaste witte lijst, nooit fouttekst of paden (zelfde lijst in vanger/src/vanger.ts).
 BROWSER_SUBCODES = ("SLOT_IN_GEBRUIK", "GEEN_BINARY", "GEEN_SCHERM", "GEHEUGEN", "SCHIJF_VOL", "STARTTIJD",
                     "DOEL_GESLOTEN", "ANDERS")
+# Op welk scherm stond de browser bij een fout (vanger.ts schermSoort): witte lijst, nooit de url.
+SCHERMEN = ("MCAS_MELDING", "MS_INLOG", "APP", "ANDERS", "GEEN")
 
 
 def browser_subcode(bericht):
@@ -221,8 +223,12 @@ def draai_vanger(dienst, modus, timeout_s):
             break
         except ValueError:
             continue
-    uitslag = {k: uitslag[k] for k in ("ok", "code", "geldig_tot", "audiences", "graph_mail_read", "sub", "gestart")
-               if k in uitslag}
+    uitslag = {k: uitslag[k] for k in ("ok", "code", "geldig_tot", "audiences", "graph_mail_read", "sub", "gestart",
+                                       "scherm", "mcas") if k in uitslag}
+    if "scherm" in uitslag and uitslag["scherm"] not in SCHERMEN:
+        uitslag["scherm"] = "ANDERS"
+    if "mcas" in uitslag:
+        uitslag["mcas"] = int(uitslag["mcas"]) if isinstance(uitslag["mcas"], int) and not isinstance(uitslag["mcas"], bool) else 0
     if "code" not in uitslag:
         # wv1950 (gemeten 29-10 09:56Z): de vanger kan sterven zonder JSON-regel (signaal, onafgevangen fout). Dan alleen
         # exitcode of signaal en een subcode uit de witte lijst op grond van stderr; nooit de tekst zelf.
@@ -234,7 +240,8 @@ def draai_vanger(dienst, modus, timeout_s):
     if "gestart" in uitslag:
         uitslag["gestart"] = bool(uitslag["gestart"])
     log("vanger", dienst=dienst, modus=modus, exit=proc.returncode, code=str(uitslag.get("code", "-")),
-        soort=uitslag.get("sub", "-"), overig=weg, status=(goed[-1] if goed else "-"))
+        soort=uitslag.get("sub", "-"), stap=uitslag.get("scherm", "-"), poging=uitslag.get("mcas", 0), overig=weg,
+        status=(goed[-1] if goed else "-"))
     return proc.returncode, uitslag
 
 

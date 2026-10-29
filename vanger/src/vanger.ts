@@ -76,6 +76,51 @@ function hostToegestaan(url: string): boolean {
 
 // Wist de vanger of Chromium al draaide toen het misging? (wv1950: BROWSERSTART zei niet óf de start faalde.)
 let browserGestart = false;
+// De context (voor de schermmeting bij een fout) en hoe vaak de vanger zelf een MCAS-melding wegklikte.
+type Blad = { url: () => string };
+let laatsteCtx: { pages: () => Blad[] } | null = null;
+let mcasGeklikt = 0;
+
+// Op welk soort scherm stond de browser toen het misging? Vaste witte lijst, nooit de url zelf (wv1950: Outlook
+// stil vernieuwen bleef sinds 28-10 hangen; inlogscherm en MCAS-melding zijn van buiten niet te onderscheiden).
+function schermSoort(): string {
+  try {
+    const urls = laatsteCtx ? laatsteCtx.pages().map((p) => p.url()) : [];
+    if (urls.some((u) => /mcas-proxyweb\.mcas\.ms|certificate-checker/i.test(u))) return 'MCAS_MELDING';
+    if (urls.some((u) => /login\.microsoftonline\.com|login\.live\.com|\/signin/i.test(u))) return 'MS_INLOG';
+    if (urls.some((u) => /^https:\/\/[^/]*(outlook|teams)\.[^/]*\//i.test(u))) return 'APP';
+    return urls.length ? 'ANDERS' : 'GEEN';
+  } catch {
+    return 'ANDERS';
+  }
+}
+
+// Outlook: de MCAS-proxy van de tenant toont soms een "omleidingsmelding" (mcas-proxyweb.mcas.ms/certificate-checker,
+// zonder inlogveld). teams-access klikt die weg ("Proceed to"), outlook-access niet: dat wacht er net als op een
+// inlogscherm tot de time-out (browser-capture.ts onSignIn). Daarom klikt de vanger voor Outlook die ene link zelf, op nl
+// ("Doorgaan naar") en en ("Proceed to"). Alleen op die melding, alleen die link; nooit een inlogveld.
+function klikMcasMelding(p: { on: (e: string, f: (fr: unknown) => void) => void; mainFrame: () => unknown; url: () => string; locator: (s: string) => { first: () => { isVisible: (o?: object) => Promise<boolean>; click: (o?: object) => Promise<void> } } }): void {
+  let bezig = false;
+  p.on('framenavigated', (fr: unknown) => {
+    if (fr !== p.mainFrame() || bezig) return;
+    if (!/mcas-proxyweb\.mcas\.ms|certificate-checker/i.test(p.url())) return;
+    bezig = true;
+    void (async () => {
+      try {
+        const link = p.locator('a:has-text("Doorgaan naar"), a:has-text("Proceed to")').first();
+        for (let i = 0; i < 10 && !(await link.isVisible()); i++) await new Promise((r) => setTimeout(r, 500));
+        if (await link.isVisible()) {
+          await link.click({ timeout: 8000 });
+          mcasGeklikt++;
+        }
+      } catch {
+        /* best effort: lukt het niet, dan meldt de schermmeting MCAS_MELDING */
+      } finally {
+        bezig = false;
+      }
+    })();
+  });
+}
 
 // Subcode bij BROWSERSTART: vaste witte lijst, nooit fouttekst of paden (zelfde lijst en volgorde als
 // meeleespod/vangst.py browser_subcode). De slotmelding staat in de browserlogs ván een "Target ... closed"-fout, dus eerst.
@@ -113,6 +158,11 @@ function zetBeleid(modus: Modus, dienst: Dienst): void {
     o.args = args;
     const ctx = await origineel(map, o);
     browserGestart = true;
+    laatsteCtx = ctx;
+    if (dienst === 'outlook') {
+      for (const p of ctx.pages()) klikMcasMelding(p);
+      ctx.on('page', klikMcasMelding);
+    }
     ctx.on('page', async (p: { opener: () => Promise<unknown>; url: () => string; close: () => Promise<void>; waitForLoadState: (s: string, o: object) => Promise<void> }) => {
       try {
         const opener = await p.opener();
@@ -175,7 +225,7 @@ async function vangOutlook(modus: Modus, uitMap: string, profiel: string): Promi
     cookies,
     gevangen_op: new Date().toISOString(),
   });
-  klaar({ ok: true, dienst: 'outlook', code: 'OK', geldig_tot: r.bearer.expiresAt }, UIT_OK);
+  klaar({ ok: true, dienst: 'outlook', code: 'OK', geldig_tot: r.bearer.expiresAt, mcas: mcasGeklikt }, UIT_OK);
 }
 
 async function vangTeams(modus: Modus, uitMap: string, profiel: string): Promise<never> {
@@ -244,14 +294,22 @@ async function hoofd(): Promise<void> {
   const profiel = process.env.MEELEES_PROFIEL || '';
   if (!profiel) klaar({ ok: false, dienst, code: 'GEEN_PROFIEL' }, UIT_FOUT);
   zetBeleid(modus, dienst);
+  // outlook-access maakt de vangbelofte vóór de navigatielus en wacht er pas ná op; vuurt zijn time-out tijdens die lus
+  // (inlogscherm of MCAS-melding), dan is die afwijzing onafgevangen en stopte Node met exit 1 zonder uitslag (gemeten
+  // 29-10-2026 10:01Z, EXIT_1). Hier wordt zo'n afwijzing gewoon een uitslag (LOGIN_TIMEOUT → LOGIN_NODIG).
+  const fout = (e: unknown): void => {
+    const s = soortFout(e);
+    const uit: Record<string, unknown> = { ok: false, dienst, code: s.code, gestart: browserGestart, scherm: schermSoort(), mcas: mcasGeklikt };
+    if (s.sub) uit.sub = s.sub;
+    klaar(uit, s.exit);
+  };
+  process.on('unhandledRejection', fout);
+  process.on('uncaughtException', fout);
   try {
     if (dienst === 'outlook') await vangOutlook(modus, uitMap, profiel);
     else await vangTeams(modus, uitMap, profiel);
   } catch (e) {
-    const s = soortFout(e);
-    const uit: Record<string, unknown> = { ok: false, dienst, code: s.code, gestart: browserGestart };
-    if (s.sub) uit.sub = s.sub;
-    klaar(uit, s.exit);
+    fout(e);
   }
 }
 

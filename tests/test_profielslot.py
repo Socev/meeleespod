@@ -140,3 +140,28 @@ def test_vanger_zonder_json_geeft_exitcode(monkeypatch):
     NepProc.returncode = 1
     NepProc.communicate = lambda self, timeout=None: (b"", b"")
     assert vangst.draai_vanger("outlook", "stil", 5)[1] == {"code": "EXIT_1", "sub": "ANDERS"}
+
+
+def test_scherm_en_mcas_witte_lijst(monkeypatch):
+    class NepProc:
+        pid = os.getpid()
+        returncode = 4
+
+        def communicate(self, timeout=None):
+            return (b'{"ok": false, "code": "LOGIN_NODIG", "scherm": "https://login.microsoftonline.com/x", "mcas": "2"}\n', b"")
+    monkeypatch.setattr(vangst, "zorg_voor_scherm", lambda: None)
+    monkeypatch.setattr(vangst.subprocess, "Popen", lambda *a, **k: NepProc())
+    assert vangst.draai_vanger("outlook", "stil", 5)[1] == {"ok": False, "code": "LOGIN_NODIG", "scherm": "ANDERS", "mcas": 0}
+
+
+def test_login_nodig_bewaart_scherm(monkeypatch):
+    staat.schrijf("sleutels", {"meelees": "nep-sleutel-1234567890"})
+    staat.schrijf("stand", {"outlook": {"ingelogd_sinds": "2026-10-01T00:00:00+00:00", "modus": "live"}})
+    from meeleespod import outlook
+    monkeypatch.setattr(outlook, "vernieuw_nodig", lambda: True)
+    monkeypatch.setattr(webhook, "alarm", lambda *a, **k: True)
+    monkeypatch.setattr(vangst, "wis_berichtcache", lambda d: None)
+    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t: (4, {"ok": False, "code": "LOGIN_NODIG", "scherm": "MS_INLOG"}))
+    assert planner.draai("outlook")["status"] == "login_nodig"
+    f = planner.stand()["outlook"]["laatste_fout"]
+    assert f["code"] == "LOGIN_NODIG" and f["scherm"] == "MS_INLOG" and planner.stand()["outlook"]["login_nodig"]

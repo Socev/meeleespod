@@ -166,6 +166,19 @@ profiel vasthouden; (2) na een podherstart wijst het slot naar de hostnaam van d
   Parro idem via `vangst.BrowserStartFout`. Ze staan in `/api/stand` → `diensten.<d>.laatste_fout` en in het log
   (`soort=`). Lijst en volgorde staan dubbel (`vangst.py`, `vanger.ts`); de toets `test_subcodes_gelijk_in_vanger_ts` houdt ze gelijk.
 
+## Outlook: vastlopen op inlogscherm of MCAS-melding (sinds 0.0.9, wv1950)
+Na het opruimen van het slot (0.0.7) startte de browser weer, maar stierf de vanger na ± 60 s met exit 1 zonder uitslag
+(gemeten 29-10 10:01Z, `EXIT_1`). Oorzaak in outlook-access `browser-capture.ts`: de vangbelofte wordt vóór de
+navigatielus gemaakt en pas ná de lus afgewacht; de lus blijft staan zolang `onSignIn()` waar is (inlogscherm, maar ook de
+MCAS-omleidingsmelding `certificate-checker`). Vuurt de time-out (stil 60 s) tijdens die lus, dan is de afwijzing
+onafgevangen en stopt Node. outlook-access klikt de MCAS-melding nooit weg (teams-access wel, op "Proceed to").
+- `vanger.ts` vangt `unhandledRejection`/`uncaughtException` af → gewone uitslag (`LOGIN_TIMEOUT` → `LOGIN_NODIG`, exit 4).
+- Bij elke fout meet de vanger het scherm: `scherm` = `MCAS_MELDING` | `MS_INLOG` | `APP` | `ANDERS` | `GEEN` (witte lijst,
+  nooit de url) → `laatste_fout.scherm` in `/api/stand`, `stap=` in het log.
+- Voor **Outlook** klikt de vanger op de MCAS-melding zelf de link "Doorgaan naar"/"Proceed to" (alleen op
+  `certificate-checker`, alleen die link, nooit een inlogveld); aantal als `mcas` in de uitslag (`poging=` in het log).
+- Komt de vanger zonder JSON-regel terug, dan `code` = `EXIT_<n>`/`SIGNAAL_<n>` en `sub` uit stderr (witte lijst).
+
 ## Teams via de MCAS-proxy (sinds 0.0.3, wv1736)
 De tenant (Huisartsen Eemland) draait Defender for Cloud Apps. De eerste Teams-navigatie loopt via de MCAS-proxy en komt
 op een "omleidingsmelding" (`mcas-proxyweb.mcas.ms/certificate-checker`). Het vendor-pakket ruimt die op door op

@@ -65,6 +65,8 @@ def _fout(uitslag, standaard):
         f["sub"] = uitslag["sub"]
     if "gestart" in uitslag:
         f["gestart"] = bool(uitslag["gestart"])
+    if uitslag.get("scherm") in vangst.SCHERMEN:
+        f["scherm"] = uitslag["scherm"]
     return f
 
 
@@ -144,6 +146,9 @@ def draai(dienst, handmatig=False):
                 zet(dienst, **velden)
             elif code == 4:
                 login_nodig(dienst)
+                if uitslag.get("scherm") in vangst.SCHERMEN:
+                    # wv1950: inlogscherm of MCAS-melding? (alleen de soort, nooit de url)
+                    zet(dienst, laatste_fout={**stand()[dienst].get("laatste_fout", {}), "scherm": uitslag["scherm"]})
                 return {"status": "login_nodig"}
             else:
                 n = int(s.get("vernieuw_fouten") or 0) + 1
