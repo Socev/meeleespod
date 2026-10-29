@@ -42,8 +42,8 @@ spec:
             limits: {cpu: "100m", memory: 64Mi}
       containers:
         - name: meeleespod
-          # CI-run 18 (commit 4435b01: Parro zelf opnieuw inloggen met bewaard wachtwoord, wv1951), rooktest + inlogtoets groen; vast op digest
-          image: ghcr.io/socev/meeleespod:stabiel-18@sha256:eb81736d529f2f71cbdf1f84847ad13cfe8da87700990814f38a444bd03bd29a
+          # CI-run 19 (commit beb9815: Teams-meting, Teams-profiel niet meer wissen, eenmalig vers profiel, wv1958), rooktest + inlogtoets + teams_meting_toets groen; vast op digest
+          image: ghcr.io/socev/meeleespod:stabiel-19@sha256:83201fb75f86706faecd0107e55fc646be0f75c58fa91f47f17a2b167b0a4680
           imagePullPolicy: IfNotPresent
           args: ["pod"]
           env:
