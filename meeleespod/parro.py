@@ -453,9 +453,13 @@ def _open(pw, headless):
     args = ["--disable-blink-features=AutomationControlled", "--no-first-run", "--disable-sync"]
     if not headless:
         args += ["--kiosk", "--window-position=0,0", "--window-size=1280,900"]
-    ctx = pw.chromium.launch_persistent_context(
-        str(d / "profiel"), headless=headless, viewport={"width": 1100, "height": 900} if headless else None,
-        locale="nl-NL", args=args, accept_downloads=False)
+    vangst.ruim_profielslot("parro")   # wv1950: wees-Chromium/slot van een vorige pod weg; profiel blijft (BEHOUD_IN_PROFIEL)
+    try:
+        ctx = pw.chromium.launch_persistent_context(
+            str(d / "profiel"), headless=headless, viewport={"width": 1100, "height": 900} if headless else None,
+            locale="nl-NL", args=args, accept_downloads=False)
+    except Exception as e:
+        raise vangst.BrowserStartFout(vangst.browser_subcode(str(e))) from None
 
     def bij_pagina(p):
         try:

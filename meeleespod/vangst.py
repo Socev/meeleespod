@@ -8,6 +8,7 @@
 import hashlib
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -96,10 +97,101 @@ def _stop(proc):
             pass
 
 
+# ---- profielslot (wv1950) --------------------------------------------------------------------------------------------
+# Chromium zet in het profiel SingletonLock (symlink "<hostnaam>-<pid>"), SingletonSocket en SingletonCookie. Gemeten
+# 29-10-2026: Outlook gaf sinds 28-10 ± 21:05Z bij elke start BROWSERSTART, Parro (ander profiel) startte wel.
+# Twee wegen naar een vastzittend slot: (1) Playwright start Chromium `detached` (eigen procesgroep; playwright-core
+# processLauncher), dus `_stop` (killpg van de vanger) raakt Chromium niet: na een time-out kan een wees-Chromium het
+# profiel vasthouden; (2) na een podherstart wijst het slot naar de hostnaam van de vorige pod en weigert Chromium het
+# profiel ("in use on another computer"). Elke browserstart gebeurt met `browser_slot` vast (één browser tegelijk), dus
+# een Chromium die dan nog dit profiel open heeft, is per definitie een wees. Het profiel zelf (cookies, Local Storage,
+# Parro-IndexedDB) blijft ongemoeid.
+SLOTBESTANDEN = ("SingletonLock", "SingletonSocket", "SingletonCookie")
+# Subcode bij BROWSERSTART: vaste witte lijst, nooit fouttekst of paden (zelfde lijst in vanger/src/vanger.ts).
+BROWSER_SUBCODES = ("SLOT_IN_GEBRUIK", "GEEN_BINARY", "GEEN_SCHERM", "GEHEUGEN", "SCHIJF_VOL", "STARTTIJD",
+                    "DOEL_GESLOTEN", "ANDERS")
+
+
+def browser_subcode(bericht):
+    """Fouttekst van Playwright/Chromium → één subcode uit BROWSER_SUBCODES (volgorde telt: de slotmelding staat in
+    de browserlogs ván een 'Target ... closed'-fout)."""
+    b = bericht or ""
+    if re.search(r"ProcessSingleton|profile appears to be in use|SingletonLock|existing browser session", b, re.I):
+        return "SLOT_IN_GEBRUIK"
+    if re.search(r"Executable doesn't exist|error while loading shared libraries|ENOENT", b, re.I):
+        return "GEEN_BINARY"
+    if re.search(r"Missing X server|cannot open display|\$DISPLAY", b, re.I):
+        return "GEEN_SCHERM"
+    if re.search(r"ENOMEM|out of memory|Cannot allocate memory", b, re.I):
+        return "GEHEUGEN"
+    if re.search(r"ENOSPC|No space left", b, re.I):
+        return "SCHIJF_VOL"
+    if re.search(r"Timeout \d+ms exceeded", b, re.I):
+        return "STARTTIJD"
+    if re.search(r"Target page, context or browser has been closed|has been closed", b, re.I):
+        return "DOEL_GESLOTEN"
+    return "ANDERS"
+
+
+class BrowserStartFout(Exception):
+    """Python-Playwright (Parro) kon de browser niet starten; alleen de subcode gaat mee."""
+
+    def __init__(self, sub):
+        super().__init__(sub)
+        self.sub = sub if sub in BROWSER_SUBCODES else "ANDERS"
+
+
+def _profiel_pids(prof):
+    doel = ("--user-data-dir=" + str(prof)).encode()
+    pids = []
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit() or int(p.name) == os.getpid():
+            continue
+        try:
+            delen = (p / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if doel in delen:
+            pids.append(int(p.name))
+    return pids
+
+
+def ruim_profielslot(dienst):
+    """Alleen aanroepen met `browser_slot` vast, vlak vóór een browserstart: wees-Chromium op dit profiel stoppen
+    (eerst TERM, na 5 s KILL) en de drie slotbestanden weghalen. Geeft (wezen, bestanden)."""
+    prof = I.GEHEIM / dienst / "profiel"
+    wezen = _profiel_pids(prof)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in wezen:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        for _ in range(50):
+            if not _profiel_pids(prof):
+                break
+            time.sleep(0.1)
+        if not _profiel_pids(prof):
+            break
+    n = 0
+    for naam in SLOTBESTANDEN:
+        f = prof / naam
+        try:
+            if f.is_symlink() or f.exists():
+                f.unlink()
+                n += 1
+        except OSError:
+            pass
+    if wezen or n:
+        log("profielslot_opgeruimd", dienst=dienst, aantal=n, bekend=len(wezen))
+    return len(wezen), n
+
+
 def draai_vanger(dienst, modus, timeout_s):
     """Draait de Node-vanger. Geeft (code, uitslag-dict). uitslag bevat nooit een token."""
     zorg_voor_scherm()
     uitmap = dienstmap(dienst)
+    ruim_profielslot(dienst)
     proc = subprocess.Popen(["node", I.VANGER, dienst, modus, str(uitmap)], env=kind_omgeving(dienst),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     if modus == "zichtbaar":
@@ -117,6 +209,7 @@ def draai_vanger(dienst, modus, timeout_s):
         uit, fout = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         _stop(proc)
+        ruim_profielslot(dienst)   # Chromium draait detached: anders blijft hij als wees het profiel vasthouden
         uit, fout = b"", b""
         log("vanger_tijd_op", dienst=dienst, modus=modus)
         return 5, {"ok": False, "code": "TIJD_OP"}
@@ -128,9 +221,14 @@ def draai_vanger(dienst, modus, timeout_s):
             break
         except ValueError:
             continue
-    uitslag = {k: uitslag[k] for k in ("ok", "code", "geldig_tot", "audiences", "graph_mail_read") if k in uitslag}
+    uitslag = {k: uitslag[k] for k in ("ok", "code", "geldig_tot", "audiences", "graph_mail_read", "sub", "gestart")
+               if k in uitslag}
+    if "sub" in uitslag and uitslag["sub"] not in BROWSER_SUBCODES:
+        uitslag["sub"] = "ANDERS"
+    if "gestart" in uitslag:
+        uitslag["gestart"] = bool(uitslag["gestart"])
     log("vanger", dienst=dienst, modus=modus, exit=proc.returncode, code=str(uitslag.get("code", "-")),
-        overig=weg, status=(goed[-1] if goed else "-"))
+        soort=uitslag.get("sub", "-"), overig=weg, status=(goed[-1] if goed else "-"))
     return proc.returncode, uitslag
 
 
@@ -268,6 +366,10 @@ def start_inlogvenster(dienst, na_vangst):
             bewaker.cancel()
             wis_berichtcache(dienst)
             fase("klaar" if code_ == 0 and uitslag.get("ok") else "mislukt")
+        except BrowserStartFout as e:
+            code_, uitslag = 5, {"ok": False, "code": "BROWSERSTART", "sub": e.sub, "gestart": False}
+            log("inlogvenster_fout", dienst=dienst, code="BROWSERSTART", soort=e.sub)
+            fase("mislukt")
         except Exception as e:
             log("inlogvenster_fout", dienst=dienst, code=type(e).__name__)
             fase("mislukt")

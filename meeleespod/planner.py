@@ -57,6 +57,17 @@ def vraag_ronde(dienst):
         _wachtrij.add(dienst)
 
 
+def _fout(uitslag, standaard):
+    """laatste_fout uit een vanger-/ronde-uitslag: code, en bij BROWSERSTART de subcode (witte lijst) en of de browser
+    al gestart was (wv1950). Geen fouttekst."""
+    f = {"tijd": nu_iso(), "code": str(uitslag.get("code") or standaard)[:32]}
+    if uitslag.get("sub") in vangst.BROWSER_SUBCODES:
+        f["sub"] = uitslag["sub"]
+    if "gestart" in uitslag:
+        f["gestart"] = bool(uitslag["gestart"])
+    return f
+
+
 def login_nodig(dienst):
     zet(dienst, login_nodig=True, laatste_fout={"tijd": nu_iso(), "code": "LOGIN_NODIG"})
     webhook.alarm(dienst, "login", LOGIN_TEKST[dienst])
@@ -86,7 +97,7 @@ def na_vangst(dienst, code, uitslag):
         vraag_ronde(dienst)
         log("ingelogd", dienst=dienst)
     else:
-        zet(dienst, laatste_fout={"tijd": nu_iso(), "code": str(uitslag.get("code") or "FOUT")[:32]})
+        zet(dienst, laatste_fout=_fout(uitslag, "FOUT"))
         log("inloggen_niet_gelukt", dienst=dienst, code=str(uitslag.get("code") or "FOUT"))
 
 
@@ -136,13 +147,15 @@ def draai(dienst, handmatig=False):
                 return {"status": "login_nodig"}
             else:
                 n = int(s.get("vernieuw_fouten") or 0) + 1
-                zet(dienst, vernieuw_fouten=n,
-                    laatste_fout={"tijd": nu_iso(), "code": str(uitslag.get("code") or "VERNIEUW_FOUT")[:32]})
+                zet(dienst, vernieuw_fouten=n, laatste_fout=_fout(uitslag, "VERNIEUW_FOUT"))
                 if n >= 3:
                     webhook.alarm(dienst, "vernieuwen", f"stil vernieuwen van {dienst} lukt al {n} keer op rij niet "
                                   "(netwerk of browser, geen uitlog)")
                 return {"status": "vernieuw_fout"}
         uit = lezer.ronde(modus) if dienst != "parro" else lezer.ronde()
+    except vangst.BrowserStartFout as e:
+        uit = {"status": "fout", "code": "BROWSERSTART", "sub": e.sub, "gestart": False}
+        log("ronde_fout", dienst=dienst, code="BROWSERSTART", soort=e.sub)
     except Exception as e:
         code = e.kort if isinstance(e, (vangnet.VerbindFout, vangnet.HttpFout)) else type(e).__name__
         uit = {"status": "fout", "code": code}
@@ -164,7 +177,7 @@ def draai(dienst, handmatig=False):
         if dienst == "parro" and uit.get("geldig_tot"):
             velden["geldig_tot"] = uit["geldig_tot"]
     else:
-        velden["laatste_fout"] = {"tijd": ronde["tijd"], "code": str(uit.get("code") or uit.get("status"))[:32]}
+        velden["laatste_fout"] = {**_fout(uit, str(uit.get("status"))), "tijd": ronde["tijd"]}
     zet(dienst, **velden)
     log("ronde", **{k: v for k, v in ronde.items() if k != "tijd"}, dienst=dienst)
     return uit

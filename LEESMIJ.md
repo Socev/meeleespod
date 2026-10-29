@@ -150,6 +150,22 @@ Verbindingsfouten (sinds 0.0.2): `laatste_ronde.code` = `VERBIND_<DNS|CERT|TLS|G
 in het log `verbind_fout host=… code=…`; geen fouttekst. Sinds 0.0.3 ook een niet-401 HTTP-fout als `HTTP<status>_<HOST>`
 (bv. `HTTP500_OUTLOOK`), zelfde vorm, geen antwoordtekst.
 
+## Profielslot en BROWSERSTART-subcode (sinds 0.0.7, wv1950)
+Gemeten 29-10-2026: Outlook gaf sinds 28-10 ± 21:05Z bij elke stille vernieuwing `BROWSERSTART`, Parro (eigen profiel)
+startte wel. Twee wegen naar een vastzittend Chromium-slot (`SingletonLock` = symlink `<hostnaam>-<pid>`,
+`SingletonSocket`, `SingletonCookie` in de profielmap): (1) Playwright start Chromium **detached** (eigen procesgroep,
+playwright-core processLauncher), dus `_stop` (killpg van de vanger, na 5 s KILL) raakt Chromium niet en een wees kan het
+profiel vasthouden; (2) na een podherstart wijst het slot naar de hostnaam van de vorige pod.
+- `vangst.ruim_profielslot(dienst)`: vóór elke browserstart (Node-vanger in `draai_vanger`, Parro in `parro._open`) en na
+  `TIJD_OP`. Altijd met `browser_slot` vast, dus een Chromium met `--user-data-dir=<dit profiel>` is per definitie een wees:
+  TERM, na 5 s KILL. Daarna de drie slotbestanden weg. Het profiel zelf (cookies, Local Storage, Parro-IndexedDB) blijft.
+  Log: `profielslot_opgeruimd dienst=… aantal=<bestanden> bekend=<wezen>` (alleen als er iets was).
+  Normaal afgesloten browsers worden **niet** nagedood (Chromium schrijft dan nog cookies weg).
+- Subcode: bij `BROWSERSTART` zet de vanger `sub` (witte lijst `SLOT_IN_GEBRUIK`, `GEEN_BINARY`, `GEEN_SCHERM`,
+  `GEHEUGEN`, `SCHIJF_VOL`, `STARTTIJD`, `DOEL_GESLOTEN`, `ANDERS`) en `gestart` (draaide Chromium al) in de stdout-JSON;
+  Parro idem via `vangst.BrowserStartFout`. Ze staan in `/api/stand` → `diensten.<d>.laatste_fout` en in het log
+  (`soort=`). Lijst en volgorde staan dubbel (`vangst.py`, `vanger.ts`); de toets `test_subcodes_gelijk_in_vanger_ts` houdt ze gelijk.
+
 ## Teams via de MCAS-proxy (sinds 0.0.3, wv1736)
 De tenant (Huisartsen Eemland) draait Defender for Cloud Apps. De eerste Teams-navigatie loopt via de MCAS-proxy en komt
 op een "omleidingsmelding" (`mcas-proxyweb.mcas.ms/certificate-checker`). Het vendor-pakket ruimt die op door op

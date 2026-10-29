@@ -74,6 +74,22 @@ function hostToegestaan(url: string): boolean {
   }
 }
 
+// Wist de vanger of Chromium al draaide toen het misging? (wv1950: BROWSERSTART zei niet óf de start faalde.)
+let browserGestart = false;
+
+// Subcode bij BROWSERSTART: vaste witte lijst, nooit fouttekst of paden (zelfde lijst en volgorde als
+// meeleespod/vangst.py browser_subcode). De slotmelding staat in de browserlogs ván een "Target ... closed"-fout, dus eerst.
+function browserSubcode(bericht: string): string {
+  if (/ProcessSingleton|profile appears to be in use|SingletonLock|existing browser session/i.test(bericht)) return 'SLOT_IN_GEBRUIK';
+  if (/Executable doesn't exist|error while loading shared libraries|ENOENT/i.test(bericht)) return 'GEEN_BINARY';
+  if (/Missing X server|cannot open display|\$DISPLAY/i.test(bericht)) return 'GEEN_SCHERM';
+  if (/ENOMEM|out of memory|Cannot allocate memory/i.test(bericht)) return 'GEHEUGEN';
+  if (/ENOSPC|No space left/i.test(bericht)) return 'SCHIJF_VOL';
+  if (/Timeout \d+ms exceeded/i.test(bericht)) return 'STARTTIJD';
+  if (/Target page, context or browser has been closed|has been closed/i.test(bericht)) return 'DOEL_GESLOTEN';
+  return 'ANDERS';
+}
+
 function zetBeleid(modus: Modus, dienst: Dienst): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pw = require('playwright');
@@ -96,6 +112,7 @@ function zetBeleid(modus: Modus, dienst: Dienst): void {
     args.push('--kiosk', '--window-position=0,0', '--window-size=1280,900', '--no-first-run', '--disable-sync');
     o.args = args;
     const ctx = await origineel(map, o);
+    browserGestart = true;
     ctx.on('page', async (p: { opener: () => Promise<unknown>; url: () => string; close: () => Promise<void>; waitForLoadState: (s: string, o: object) => Promise<void> }) => {
       try {
         const opener = await p.opener();
@@ -115,14 +132,14 @@ function zetBeleid(modus: Modus, dienst: Dienst): void {
   };
 }
 
-function soortFout(e: unknown): { code: string; exit: number } {
+function soortFout(e: unknown): { code: string; exit: number; sub?: string } {
   const bericht = e instanceof Error ? e.message : String(e);
   const c = (e as { code?: unknown; exitCode?: unknown }) || {};
   if (/ERR_INTERNET|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION|ERR_CERT|ERR_NETWORK|ERR_TIMED_OUT|ERR_PROXY/i.test(bericht)) {
     return { code: 'TIJDELIJK', exit: UIT_TIJDELIJK };
   }
   if (/launchPersistentContext|Executable doesn't exist|Target page, context or browser has been closed|browserType\.launch/i.test(bericht)) {
-    return { code: 'BROWSERSTART', exit: UIT_TIJDELIJK };
+    return { code: 'BROWSERSTART', exit: UIT_TIJDELIJK, sub: browserSubcode(bericht) };
   }
   if (c.code === 'LOGIN_TIMEOUT' || c.code === 'NO_TOKEN' || c.code === 'AUTH_CANCELLED' || c.exitCode === 4) {
     return { code: 'LOGIN_NODIG', exit: UIT_LOGIN };
@@ -232,7 +249,9 @@ async function hoofd(): Promise<void> {
     else await vangTeams(modus, uitMap, profiel);
   } catch (e) {
     const s = soortFout(e);
-    klaar({ ok: false, dienst, code: s.code }, s.exit);
+    const uit: Record<string, unknown> = { ok: false, dienst, code: s.code, gestart: browserGestart };
+    if (s.sub) uit.sub = s.sub;
+    klaar(uit, s.exit);
   }
 }
 
