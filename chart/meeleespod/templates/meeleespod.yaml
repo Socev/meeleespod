@@ -42,8 +42,8 @@ spec:
             limits: {cpu: "100m", memory: 64Mi}
       containers:
         - name: meeleespod
-          # CI-run 17 (commit be214c9: profielslot, subcode, schermmeting, Outlook-MCAS wegklikken, wv1950), rooktest groen; vast op digest
-          image: ghcr.io/socev/meeleespod:stabiel-17@sha256:255eefe74f99386a5e31764f9bfb6000bd3eb6b2f348d8d96fcbd2a447d37f42
+          # CI-run 18 (commit 4435b01: Parro zelf opnieuw inloggen met bewaard wachtwoord, wv1951), rooktest + inlogtoets groen; vast op digest
+          image: ghcr.io/socev/meeleespod:stabiel-18@sha256:eb81736d529f2f71cbdf1f84847ad13cfe8da87700990814f38a444bd03bd29a
           imagePullPolicy: IfNotPresent
           args: ["pod"]
           env:
