@@ -85,3 +85,46 @@ def test_niet_zaaien_als_de_haal_onvolledig_was():
     items, groepen, volledig = parro.haal_alles(nep_api)
     uit = parro.verwerk(items, groepen, st, lambda p: verstuurd.append(p) or {"ok": True}, volledig)
     assert uit["gezaaid"] == 2 and "mededeling:502" not in [i["id"] for i in verstuurd[0]["items"]]
+
+
+# ---- sessiemeting (wv1911): alleen namen, tijden, statussen en korte hashes ---------------------------------------------
+import base64 as _b64
+import json as _json
+
+
+def _jwt(claims):
+    deel = _b64.urlsafe_b64encode(_json.dumps(claims).encode()).decode().rstrip("=")
+    return "eyJhbGciOiJub25lIn0." + deel + ".handtekening"
+
+
+def test_sessiemeting_rotatie_en_geen_tokens():
+    rt0, rt1, rt2 = "verzonnen-vernieuwtoken-nul-0000", _jwt({"exp": 1793000000, "iat": 1792990000}), "verzonnen-token-twee-2222"
+    at = _jwt({"exp": 1792993600, "auth_time": 1792960000, "iss": "https://inlog.voorbeeld.test/realm", "sub": "x"})
+    post1 = [("https://inlog.voorbeeld.test/oauth/token/1234", 200, "grant_type=refresh_token&refresh_token=" + rt0,
+              _json.dumps({"access_token": at, "refresh_token": rt1, "expires_in": 3600, "refresh_expires_in": 28800}))]
+    m1 = parro.meet_vernieuwing(post1, None, "2026-10-29T06:25:00+00:00")
+    assert m1["vernieuwd"] and m1["http"] == 200 and m1["pad"] == "inlog.voorbeeld.test/oauth/token/N"
+    assert m1["antwoord_tijden"] == {"expires_in": 3600, "refresh_expires_in": 28800}
+    assert set(m1["rt_tijden"]) == {"exp", "iat"}
+    assert "rotatie_bewaard" not in m1
+    tekst = _json.dumps(m1)
+    for geheim in (rt0, rt1, at):
+        assert geheim not in tekst
+    # volgende ronde stuurt rt1 (bewaard) → ja; stuurt weer rt0 (kwijt) → nee
+    goed = parro.meet_vernieuwing([("https://inlog.voorbeeld.test/oauth/token", 200, _json.dumps({"refreshToken": rt1}),
+                                    _json.dumps({"refreshToken": rt2, "expiresAt": "2026-10-29T09:25:00Z"}))], m1)
+    assert goed["rotatie_bewaard"] is True and goed["antwoord_tijden"] == {"expiresAt": "2026-10-29T09:25:00Z"}
+    kwijt = parro.meet_vernieuwing([("https://inlog.voorbeeld.test/oauth/token", 400, "refresh_token=" + rt0,
+                                     _json.dumps({"error": "invalid_grant", "error_description": "Token is not active"}))], m1)
+    assert kwijt["rotatie_bewaard"] is False and kwijt["fout"] == "invalid_grant" and not kwijt["vernieuwd"]
+    assert "Token is not active" not in _json.dumps(kwijt)
+    # geen vernieuwing gezien: de vorige hash schuift door
+    leeg = parro.meet_vernieuwing([("https://rest-v2.parro.com/rest/v2/iets/77", 201, "{}", "{}")], m1)
+    assert leeg["vernieuwd"] is False and leeg["rt_vorige_in"] == m1["rt_in"] and leeg["paden"] == ["rest-v2.parro.com/rest/v2/iets/N"]
+
+
+def test_toegang_claims_alleen_namen():
+    at = _jwt({"exp": 1792993600, "auth_time": 1792960000, "iss": "https://inlog.voorbeeld.test/realm", "email": "a@b.c"})
+    c = parro.toegang_claims({"authorization": "Bearer " + at})
+    assert c["claims"] == ["auth_time", "email", "exp", "iss"] and c["iss_host"] == "inlog.voorbeeld.test"
+    assert "a@b.c" not in _json.dumps(c)

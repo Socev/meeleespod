@@ -10,6 +10,7 @@ Wat anders is dan op de pc (ontwerp § 4, parro-lezer):
 De leeslogica (groepen, mededelingen, agenda, gesprekken, ids) is ongewijzigd, zodat de ids gelijk zijn aan de pc.
 """
 import base64
+import hashlib
 import html
 import json
 import re
@@ -286,6 +287,158 @@ def verwerk(items, groepen, st, stuur, volledig=True):
     return uit
 
 
+# ---- sessiemeting (wv1911) ----------------------------------------------------------------------------------------------
+# Parro viel 28-10 ± 8 u na de inlog uit, terwijl stil vernieuwen tussendoor wél lukte. Twee verklaringen: de sessie is
+# server-side begrensd, of het vernieuwde vernieuwtoken (rotatie) haalt de schijf niet omdat de browser direct na de
+# API-aanroepen sluit, zodat elke ronde het token van de inlog opnieuw gebruikt tot dat verloopt. De meting bewaart
+# alleen namen, tijden, statussen en een korte hash (8 hex van sha256) per vernieuwtoken: nooit een token of inhoud.
+NA_VERNIEUW_WACHT_MS = 10000      # na een geziene vernieuwing de app de tijd geven om parro_db weg te schrijven
+_NAAM = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+GOOGLE_HOST = re.compile(r"(^|\.)(googleapis\.com|google\.com|gstatic\.com|firebaseio\.com|firebase\.googleapis\.com)$", re.I)
+_TIJDNAAM = re.compile(r"(exp|valid|ttl|lifetime|until|tot)", re.I)
+
+
+def _h8(s):
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:8] if isinstance(s, str) and s else None
+
+
+def _namen(d):
+    return sorted(k for k in d if isinstance(k, str) and _NAAM.match(k))[:20] if isinstance(d, dict) else []
+
+
+def _vernieuwtoken(d):
+    if not isinstance(d, dict):
+        return None
+    for k, v in d.items():
+        if isinstance(k, str) and re.search(r"refresh", k, re.I) and isinstance(v, str) and len(v) >= 16:
+            return v
+    return None
+
+
+def _jwt_tijden(tok):
+    """exp/iat/auth_time/nbf van een JWT als ISO-tijd; {} als het geen JWT is."""
+    try:
+        deel = tok.split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(deel + "=" * (-len(deel) % 4)))
+    except Exception:
+        return {}
+    uit = {}
+    for k in ("exp", "iat", "auth_time", "nbf"):
+        if isinstance(payload.get(k), (int, float)):
+            uit[k] = datetime.fromtimestamp(payload[k], timezone.utc).isoformat()
+    return uit
+
+
+def _getallen(d):
+    """Numerieke velden met een tijd-achtige naam (expires_in, refresh_expires_in, expiresAt als getal)."""
+    if not isinstance(d, dict):
+        return {}
+    return {k: d[k] for k in _namen(d) if _TIJDNAAM.search(k) and isinstance(d[k], (int, float))
+            and not isinstance(d[k], bool)}
+
+
+def _tijdteksten(d):
+    """Tijd-achtige velden als ISO-tekst (expiresAt: "2026-…"); alleen als het op een datum lijkt."""
+    if not isinstance(d, dict):
+        return {}
+    return {k: d[k][:32] for k in _namen(d) if _TIJDNAAM.search(k) and isinstance(d[k], str)
+            and re.match(r"^\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:?\d{2})?$", d[k])}
+
+
+def _pad(url):
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    pad = (u.hostname or "") + re.sub(r"\d{2,}", "N", u.path)   # ids weg, v2 blijft
+    return re.sub(r"[^A-Za-z0-9/._-]", "", pad)[:64]
+
+
+def _lichaam(tekst):
+    if not tekst:
+        return {}
+    try:
+        j = json.loads(tekst)
+        return j if isinstance(j, dict) else {}
+    except ValueError:
+        from urllib.parse import parse_qs
+        return {k: v[0] for k, v in parse_qs(tekst).items() if v}
+
+
+def meet_vernieuwing(posts, vorige=None, nu=None):
+    """posts = [(url, status, verzoektekst, antwoordtekst)] van POST's in deze ronde (zonder Google-hosts). Pure functie.
+    vorige = de vorige meting (voor rotatie_bewaard). Geeft alleen namen, tijden, statussen en korte hashes."""
+    uit = {"tijd": nu or datetime.now(timezone.utc).isoformat(), "posts": len(posts),
+           "paden": sorted({_pad(p[0]) for p in posts})[:6], "vernieuwd": False}
+    for url, status, vt, at in posts:
+        v, a = _lichaam(vt), _lichaam(at)
+        rt_uit, rt_in = _vernieuwtoken(v), _vernieuwtoken(a)
+        if not (rt_uit or rt_in or "refresh" in (vt or "").lower()):
+            continue
+        uit.update(vernieuwd=bool(rt_in), pad=_pad(url), http=status, verzoek_velden=_namen(v),
+                   antwoord_velden=_namen(a), rt_uit=_h8(rt_uit), rt_in=_h8(rt_in),
+                   antwoord_tijden={**_getallen(a), **_tijdteksten(a)}, rt_tijden=_jwt_tijden(rt_in or ""))
+        fout = a.get("error") or a.get("code")
+        if isinstance(fout, str) and re.match(r"^[A-Za-z_.-]{1,40}$", fout):
+            uit["fout"] = fout
+        break
+    vorig_in = (vorige or {}).get("rt_in") or (vorige or {}).get("rt_vorige_in")
+    if uit.get("rt_uit") and vorig_in:
+        # ja = deze ronde stuurde het token dat de vorige ronde kreeg (rotatie bewaard); nee = een ouder token
+        uit["rotatie_bewaard"] = uit["rt_uit"] == vorig_in
+    if not uit.get("rt_in") and vorig_in:
+        uit["rt_vorige_in"] = vorig_in
+    return uit
+
+
+def toegang_claims(headers):
+    """Namen van de claims in het toegangstoken + auth_time en de host van iss (geen waarden)."""
+    try:
+        tok = headers.get("authorization", "").split(" ", 1)[1]
+        deel = tok.split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(deel + "=" * (-len(deel) % 4)))
+    except Exception:
+        return {}
+    from urllib.parse import urlsplit
+    uit = {"claims": _namen(payload)}
+    if isinstance(payload.get("auth_time"), (int, float)):
+        uit["auth_time"] = datetime.fromtimestamp(payload["auth_time"], timezone.utc).isoformat()
+    if isinstance(payload.get("iss"), str):
+        uit["iss_host"] = re.sub(r"[^a-z0-9.-]", "", (urlsplit(payload["iss"]).hostname or "").lower())[:64]
+    return uit
+
+
+class _PostVanger:
+    """Verzamelt POST-antwoorden van Parro-hosts tijdens een ronde (lezen gebeurt pas na de ronde)."""
+
+    def __init__(self, page):
+        self.antwoorden = []
+        page.on("response", self._op)
+
+    def _op(self, r):
+        try:
+            from urllib.parse import urlsplit
+            host = urlsplit(r.url).hostname or ""
+            # alle POST's behalve Google/Firebase (firebaseinstallations heeft een eigen refreshToken): de vernieuwing
+            # kan bij een aparte inloghost liggen; van niet-Parro-hosts komen ook alleen namen en hashes in de meting
+            if r.request.method == "POST" and not GOOGLE_HOST.search(host) and len(self.antwoorden) < 40:
+                self.antwoorden.append(r)
+        except Exception:
+            pass
+
+    def posts(self):
+        uit = []
+        for r in self.antwoorden:
+            try:
+                vt = r.request.post_data or ""
+            except Exception:
+                vt = ""
+            try:
+                at = r.text() if len(vt) < 100000 else ""
+            except Exception:
+                at = ""
+            uit.append((r.url, r.status, vt, at[:200000]))
+        return uit
+
+
 def _open(pw, headless):
     d = vangst.dienstmap("parro")
     args = ["--disable-blink-features=AutomationControlled", "--no-first-run", "--disable-sync"]
@@ -364,6 +517,23 @@ def inloggen_stil():
     return 4, {"ok": False, "code": "LOGIN_NODIG"}
 
 
+def _bewaar_sessiemeting(vanger, headers):
+    """Meting van deze ronde in /staat/parro_sessie.json (laatste 24) en terug voor de stand. Faalt nooit de ronde."""
+    try:
+        oud = staat.lees("parro_sessie")
+        reeks = oud.get("reeks") or []
+        m = meet_vernieuwing(vanger.posts(), reeks[-1] if reeks else None)
+        m.update(toegang_claims(headers))
+        staat.schrijf("parro_sessie", {"reeks": (reeks + [m])[-24:]})
+        log("parro_sessie", status="vernieuwd" if m.get("vernieuwd") else "geen_vernieuwing", aantal=m.get("posts"),
+            http=m.get("http") or 0, code=str(m.get("fout") or "-"),
+            reden={True: "rotatie_bewaard", False: "rotatie_kwijt"}.get(m.get("rotatie_bewaard"), "onbekend"))
+        return m
+    except Exception as e:
+        log("parro_sessie_fout", code=type(e).__name__)
+        return {"fout_meting": type(e).__name__}
+
+
 def ronde():
     """Eén Parro-ronde. Geeft een uitslag-dict (alleen aantallen en codes)."""
     from playwright.sync_api import sync_playwright
@@ -374,14 +544,19 @@ def ronde():
             ctx = _open(pw, headless=True)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                vanger = _PostVanger(page)
                 page.goto(APP_URL)
                 headers = vang_headers(page, HEADERS_WACHT_SEC)
                 if not headers and waarom_geen_headers(page) == "geen_api":
                     headers = klik_inloggen(page)
                 if not headers:
-                    return {"status": "login_nodig"}
+                    sessie = _bewaar_sessiemeting(vanger, {})
+                    return {"status": "login_nodig", "sessie": sessie}
                 info = token_info(headers)
                 items, groepen, volledig = haal_alles(lambda pad, rng: api_get(ctx, headers, pad, rng))
+                sessie = _bewaar_sessiemeting(vanger, headers)
+                if sessie.get("vernieuwd"):
+                    page.wait_for_timeout(NA_VERNIEUW_WACHT_MS)
             finally:
                 ctx.close()
                 vangst.wis_berichtcache("parro")
@@ -402,6 +577,7 @@ def ronde():
         return {"status": "webhook_fout", "code": type(e).__name__}
     staat.schrijf("parro", st)
     uit["geldig_tot"] = info.get("exp")
+    uit["sessie"] = sessie
     if uit["status"] == "geen_groepen":
         webhook.alarm("parro", "groepen", "geen groepen gevonden in het API-antwoord; uitlezer afstellen")
     elif uit["verstuurd"] == 0 and uit["status"] == "ok":

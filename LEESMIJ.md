@@ -71,6 +71,12 @@ bewaren daar berichten); cookies en Local Storage (de MSAL-sessie) blijven. **Pa
 Parro-webapp bewaart toegangs- en vernieuwtoken in de IndexedDB-databank `parro_db` (Drift/SQLite); die wissen gaf
 "uitgelogd" zodra het toegangstoken na 1 u verliep. Voor Parro blijven IndexedDB, File System en WebStorage daarom staan
 (Parro bevat geen patiëntgegevens, wel kindergegevens; `/geheim` zit niet in de NAS-back-up); caches gaan wel weg.
+**Parro-sessiemeting** (wv1911, chart 0.0.5): Parro viel 28-10 ± 8 u na de inlog uit terwijl stil vernieuwen tussendoor
+lukte. Elke ronde bewaart nu in `/staat/parro_sessie.json` (laatste 24) en in `/api/stand` (`diensten.parro.sessie`) alleen
+namen, tijden, statussen en een hash van 8 hex per vernieuwtoken: welke POST de vernieuwing deed, `antwoord_tijden`
+(bv. `refresh_expires_in`), `rt_tijden` (als het vernieuwtoken een JWT is), claimnamen en `auth_time` van het
+toegangstoken, en `rotatie_bewaard` (stuurde deze ronde het vernieuwtoken dat de vorige ronde kreeg?). Na een geziene
+vernieuwing wacht de ronde 10 s vóór het sluiten, zodat de app het nieuwe token in `parro_db` kan wegschrijven.
 
 Waarom eerst stil (review 27-10, MOET 1): Origin en Host bewijzen alleen iets tegenover een browser. Een proces in het
 clusternetwerk dat de pagina-poort bereikt, kan ze zelf invullen. Daarom kan zo'n proces hooguit een Microsoft-inlogpagina
