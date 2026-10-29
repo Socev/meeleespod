@@ -100,21 +100,23 @@ def beleidtoets():
     uitkomsten = {}
     with sync_playwright() as pw, tempfile.TemporaryDirectory() as prof:
         ctx = pw.chromium.launch_persistent_context(prof, headless=False, accept_downloads=False, timeout=60000)
-        p = ctx.new_page()
+        # CI-runs 11 en 13 (29-10): na devtools:// sloot soms het tabblad of de hele browser (TargetClosedError, wisselend).
+        # Een vast leeg tabblad houdt de browser open; elke URL krijgt een eigen tabblad en geslaagd blijft alleen
+        # ERR_BLOCKED_BY_ADMINISTRATOR.
+        houd = ctx.new_page()
         # chrome://version = bewijs dat het beleid geladen is; devtools:// = het ontwikkelaarsgereedschap kan niet laden
         for url in ("chrome://version", "devtools://devtools/bundled/inspector.html", "file:///etc/passwd"):
-            for poging in (1, 2):
-                try:
-                    p.goto(url, timeout=15000)
-                    uitkomsten[url] = "NIET geblokkeerd"
-                except Exception as e:
-                    uitkomsten[url] = "geblokkeerd" if "ERR_BLOCKED_BY_ADMINISTRATOR" in str(e) else "andere fout: " + type(e).__name__
-                    # CI-run 11 (29-10): het tabblad sloot eenmalig na devtools:// (TargetClosedError). Eén nieuwe poging
-                    # in een vers tabblad; ook dan telt alleen ERR_BLOCKED_BY_ADMINISTRATOR als geslaagd.
-                    if poging == 1 and type(e).__name__ == "TargetClosedError":
-                        p = ctx.new_page()
-                        continue
-                break
+            p = ctx.new_page()
+            try:
+                p.goto(url, timeout=15000)
+                uitkomsten[url] = "NIET geblokkeerd"
+            except Exception as e:
+                uitkomsten[url] = "geblokkeerd" if "ERR_BLOCKED_BY_ADMINISTRATOR" in str(e) else "andere fout: " + type(e).__name__
+            try:
+                p.close()
+            except Exception:
+                pass
+        houd.close()
         ctx.close()
     for url, u in uitkomsten.items():
         print(("  OK    " if u == "geblokkeerd" else "  FOUT  ") + f"beleid {url}: {u}")
