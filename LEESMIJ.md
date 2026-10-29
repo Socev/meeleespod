@@ -274,3 +274,9 @@ en sloot met `ONVOLLEDIG` (geen chatsvcagg/ic3). De geslaagde inlog van 27-10 wa
 - **Lezen van de uitslag**: `ONVOLLEDIG` + `TEAMS_CHATS_FOUT` + `msal.TEAMS_MCAS` zonder chatsvcagg/ic3 = Teams-web laadt
   zijn chats niet onder de MCAS-sessie (tenantbeleid; alleen de beheerder van Huisartsen Eemland kan dat veranderen).
   Veel `MS_INLOG`-navigaties of `herlaad` zonder chatfout = inloglus; `popup_dicht` > 0 = eigen sluiter.
+- **Uitkomst herinlog 29-10-2026 (wv1967)**: stille vangst 13:01Z `LOGIN_NODIG` (MS_INLOG); zichtbare vangst 13:06Z `OK` met
+  chatsvcagg/ic3/graph, MSAL-tokens alleen onder hostklasse `TEAMS` (niet `TEAMS_MCAS`); nav TEAMS_MCAS 2, MCAS_MELDING 2,
+  MS_INLOG 41, herlaad 0, popup_dicht 0. Vers profiel + niet meer wissen was genoeg; geen tenantbeleid nodig. Teams staat
+  sinds 13:30Z op `live` (eerste ronde 161 verstuurd, 119 zakelijk). `CHATS_FOUT_RE` is NIET getoetst: er verscheen geen
+  chatfoutmelding (`chats_fout` 0/0). Elke ronde sinds 27-10 telt 4 chatfouten op 49 chats; de soort staat alleen in de
+  podlog (`teams_chat_fout`, code/http), niet in `stand` — die chats komen niet binnen.
