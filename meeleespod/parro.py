@@ -294,6 +294,7 @@ def verwerk(items, groepen, st, stuur, volledig=True):
 # alleen namen, tijden, statussen en een korte hash (8 hex van sha256) per vernieuwtoken: nooit een token of inhoud.
 NA_VERNIEUW_WACHT_MS = 10000      # na een geziene vernieuwing de app de tijd geven om parro_db weg te schrijven
 _NAAM = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+LEZENDE_METHODEN = ("GET", "HEAD", "OPTIONS")   # alleen kijken naar wat de app zelf schrijvend doet (de vernieuwing)
 GOOGLE_HOST = re.compile(r"(^|\.)(googleapis\.com|google\.com|gstatic\.com|firebaseio\.com|firebase\.googleapis\.com)$", re.I)
 _TIJDNAAM = re.compile(r"(exp|valid|ttl|lifetime|until|tot)", re.I)
 
@@ -419,7 +420,7 @@ class _PostVanger:
             host = urlsplit(r.url).hostname or ""
             # alle POST's behalve Google/Firebase (firebaseinstallations heeft een eigen refreshToken): de vernieuwing
             # kan bij een aparte inloghost liggen; van niet-Parro-hosts komen ook alleen namen en hashes in de meting
-            if r.request.method == "POST" and not GOOGLE_HOST.search(host) and len(self.antwoorden) < 40:
+            if r.request.method not in LEZENDE_METHODEN and not GOOGLE_HOST.search(host) and len(self.antwoorden) < 40:
                 self.antwoorden.append(r)
         except Exception:
             pass
