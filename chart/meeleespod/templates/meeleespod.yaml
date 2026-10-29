@@ -42,8 +42,8 @@ spec:
             limits: {cpu: "100m", memory: 64Mi}
       containers:
         - name: meeleespod
-          # CI-run 14 (commit 2de9920: Parro-sessiemeting ook bij inloggen, wv1911), rooktest groen; vast op digest
-          image: ghcr.io/socev/meeleespod:stabiel-14@sha256:74684930d691bfe64e3129c85480eb84a6f0b3e8e175f175cb997ce2f45ece06
+          # CI-run 15 (commit 553a0c4: profielslot opruimen + BROWSERSTART-subcode, wv1950), rooktest groen; vast op digest
+          image: ghcr.io/socev/meeleespod:stabiel-15@sha256:78a30decc41bd95a93bd828f0a4831e06441fb9193013116bf1e6d675c113a49
           imagePullPolicy: IfNotPresent
           args: ["pod"]
           env:
