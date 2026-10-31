@@ -42,8 +42,8 @@ spec:
             limits: {cpu: "100m", memory: 64Mi}
       containers:
         - name: meeleespod
-          # CI-run 19 (commit beb9815: Teams-meting, Teams-profiel niet meer wissen, eenmalig vers profiel, wv1958), rooktest + inlogtoets + teams_meting_toets groen; vast op digest
-          image: ghcr.io/socev/meeleespod:stabiel-19@sha256:83201fb75f86706faecd0107e55fc646be0f75c58fa91f47f17a2b167b0a4680
+          # CI-run 20 (commit e8c494e: Outlook/Teams warm houden + vangstlog met Microsoft-inlogtelling, wv2066), rooktest + inlogtoets + teams_meting_toets + ms_inlog_toets groen; vast op digest
+          image: ghcr.io/socev/meeleespod:stabiel-20@sha256:675f159ae7e9cc5faddbe8dabe5fbd329e731edd8b6f35db09b8ddd87b77e52e
           imagePullPolicy: IfNotPresent
           args: ["pod"]
           env:
@@ -54,6 +54,7 @@ spec:
             - {name: MEELEES_TEAMS, value: "aan"}
             - {name: MEELEES_PARRO, value: "aan"}
             - {name: MEELEES_BIJLAGEN, value: "aan"}   # aan sinds 0.0.4 (B3b wv1751: pod-kant van de review klaar)
+            - {name: MEELEES_WARM_UUR, value: "3"}     # wv2066: stille vangst Outlook/Teams als de vorige geslaagde ≥ 3 u oud is; 0 = uit
           ports:
             - {containerPort: 8080}
             - {containerPort: 8081}
