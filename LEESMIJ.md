@@ -294,7 +294,11 @@ termijn van de tenant (aanmeldfrequentie, MCAS-sessie) → vaker langskomen help
   geleden zijn. In de ronde-uren vóór de ronde; daarbuiten (nacht) en bij een dienst in `proef` alleen de vangst, zonder
   ronde. Niet bij `login_nodig` (dan probeert elke ronde het al) en niet als het token bijna op is (dat blijft het
   gewone vernieuwen, met alarm). **Een mislukte warm-vangst is alleen een meting**: geen login-alarm, het token is nog
-  geldig en de ronde leest gewoon door. Gelukt = nieuw token en `geldig_tot` (zoals stil vernieuwen). Parro niet.
+  geldig en de ronde leest gewoon door; ook een exceptie bij het starten telt als mislukte poging (review MOET 1). Is de
+  browser bezet (inlogvenster open), dan wacht een warm-vangst hooguit 5 s en slaat over (stil vernieuwen wacht 10 min).
+  Gelukt = nieuw token en `geldig_tot` (zoals stil vernieuwen). Parro niet. Bekend (review KAN): in `proef` stopt het
+  warm houden zodra het token bijna op is (vernieuwen hoort bij een ronde, en proef draait geen rondes); de inlogknop
+  wacht 2 s op de browser, dus tijdens een stille vangst (1–3 min) zegt hij vaker "er loopt al een browser".
 - **Vangstlog** (`vangst.bewaar_vangst`, `/staat/vangsten.json`, laatste 12 per dienst; `/api/stand` →
   `diensten.<outlook|teams>.vangsten` = `warm_uur`, `interactief`, `laatste_ok`, laatste 6): per vangst `tijd`, `reden`
   (`vernieuw` | `warm` | `knop` = stil na de inlogknop | `zichtbaar`), `code`, `ok`, `scherm`, `uur_sinds_inlog` (sinds de
@@ -308,7 +312,9 @@ termijn van de tenant (aanmeldfrequentie, MCAS-sessie) → vaker langskomen help
   `interaction_required` na ok-vangsten) = aanmeldfrequentie van de tenant (a), dagelijks inloggen blijft nodig;
   50058/`login_required` = geen sessiecookie meer; 700084 = SPA-vernieuwtoken met vaste levensduur van 1 dag. `ms`
   met `authorize` 0 en `token` 0 in de warm-vangsten = de vangst raakte de inlogsessie niet (de app gebruikte zijn
-  bewaarde token), dan zegt het uitblijven van effect niets over (b).
+  bewaarde token), dan zegt het uitblijven van effect niets over (b). `fout` 0 sluit niets uit (review KAN 5): een
+  verlopen sessie geeft vaak gewoon de inlogpagina (200, geen error-redirect) → dan `scherm` `MS_INLOG` met `authorize`
+  > 0; en een token-4xx waarvan de tekst nog niet gelezen was toen de vanger stopte, telt niet mee.
 - **Gemeten vóór de bouw** (stand 31-10 08:05Z): Teams faalt anders dan Outlook: stille vangsten 30-10 22:16Z t/m
   31-10 07:16Z `LOGIN_NODIG` op scherm `APP` (geen `MS_INLOG`-navigatie, MSAL-toegangstokens voor chatsvcagg/ic3 nog
   geldig in localStorage) → bij Teams valt niet het inlogscherm maar de vangst zelf om; `ms` laat zien of Teams

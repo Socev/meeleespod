@@ -138,9 +138,9 @@ def warm_nodig(dienst):
                for t in (vangst.laatste_ok_vangst(dienst), vangst.laatste_vangst(dienst, "warm")))
 
 
-def _vang_stil(dienst, reden):
+def _vang_stil(dienst, reden, wacht_s=600):
     """Eén stille vangst onder het browserslot. Geeft (code, uitslag) of None als de browser bezet bleef."""
-    if not vangst.browser_slot.acquire(timeout=600):
+    if not vangst.browser_slot.acquire(timeout=wacht_s):
         return None
     try:
         code, uitslag = vangst.draai_vanger(dienst, "stil", 300, reden=reden)
@@ -161,7 +161,14 @@ def _na_warm_ok(dienst, s, uitslag):
 def _warm_vangst(dienst):
     """wv2066: stille vangst met reden 'warm'. Het token is nog geldig, dus mislukken is alleen een meting (vangstlog),
     geen login-alarm; de eerstvolgende ronde met een bijna verlopen token vernieuwt en alarmeert zoals altijd."""
-    r = _vang_stil(dienst, "warm")
+    try:
+        # review wv2066 ZOU 2: niet minutenlang op een open inlogvenster wachten (de planner-lus staat dan stil)
+        r = _vang_stil(dienst, "warm", wacht_s=5)
+    except Exception as e:
+        # review wv2066 MOET 1: een fout hier mag de ronde niet breken; wel loggen, zodat de 3-uursrem blijft gelden
+        log("warm_fout", dienst=dienst, code=type(e).__name__)
+        vangst.bewaar_vangst(dienst, "stil", "warm", {"ok": False, "code": type(e).__name__})
+        return None
     if r is None:
         log("warm_overgeslagen", dienst=dienst, code="BROWSER_BEZET")
         return None
@@ -179,9 +186,6 @@ def houd_warm(dienst):
     _bezig["dienst"] = dienst
     try:
         return _warm_vangst(dienst)
-    except Exception as e:
-        log("warm_fout", dienst=dienst, code=type(e).__name__)
-        return None
     finally:
         _bezig["dienst"] = None
 

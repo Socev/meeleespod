@@ -153,3 +153,37 @@ def test_vangstlog_interactief_en_uren(warm):
     st = api.stand_openbaar()["diensten"]
     assert st["outlook"]["vangsten"]["warm_uur"] == 3.0 and len(st["outlook"]["vangsten"]["reeks"]) == 6
     assert "vangsten" in st["teams"] and "vangsten" not in st["parro"]
+
+
+def test_fout_in_warmvangst_breekt_de_ronde_niet(warm, monkeypatch):
+    """Review wv2066 MOET 1: een exceptie (bv. ENOMEM bij het starten van node) in de warm-vangst: ronde leest gewoon,
+    en de volgende ronde probeert niet meteen opnieuw."""
+    from meeleespod import outlook
+    monkeypatch.setattr(outlook, "vernieuw_nodig", lambda: False)
+    rondes = []
+    monkeypatch.setattr(outlook, "ronde", lambda modus: rondes.append(1) or {"status": "ok"})
+    pogingen = []
+
+    def stuk(*a, **k):
+        pogingen.append(1)
+        raise OSError(12, "geheugen")
+    monkeypatch.setattr(vangst, "draai_vanger", stuk)
+    assert planner.draai("outlook")["status"] == "ok"
+    assert planner.draai("outlook")["status"] == "ok"
+    assert rondes == [1, 1] and pogingen == [1] and warm == []
+    assert staat.lees("vangsten")["outlook"]["reeks"][-1]["code"] == "OSError"
+
+
+def test_warmvangst_wacht_niet_op_open_venster(warm, monkeypatch):
+    """Review wv2066 ZOU 2: browser bezet (inlogvenster) = warm-vangst overslaan, niet 10 min wachten."""
+    import time
+    from meeleespod import outlook
+    monkeypatch.setattr(outlook, "vernieuw_nodig", lambda: False)
+    monkeypatch.setattr(outlook, "ronde", lambda modus: {"status": "ok"})
+    assert vangst.browser_slot.acquire(timeout=1)
+    try:
+        t0 = time.time()
+        assert planner.draai("outlook")["status"] == "ok"
+        assert time.time() - t0 < 30
+    finally:
+        vangst.browser_slot.release()
