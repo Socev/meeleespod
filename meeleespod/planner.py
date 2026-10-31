@@ -6,6 +6,9 @@
   Proef draait NOOIT vanzelf (review MOET 5: elk uur het hele venster opnieuw naar Qwen); alleen via /api/ronde.
 - Login nodig: één alarm [dienst/login] bij de overgang, daarna hooguit 1x per 24 u; hersteld = alarmstempel weg.
 - Vooraankondiging: 80 dagen na de laatste handmatige inlog één bericht.
+- Warm houden (wv2066): Outlook en Teams krijgen ook een stille vangst als de laatste geslaagde vangst ≥ WARM_UUR geleden
+  is; buiten de ronde-uren (nacht) alleen die vangst, zonder ronde. Mislukt zo'n vangst terwijl het token nog geldig is,
+  dan is dat alleen een meting (vangstlog), geen login-alarm: de lezer kan dan nog gewoon lezen.
 """
 import threading
 import time
@@ -119,6 +122,70 @@ def _lezer(dienst):
     return parro
 
 
+def warm_nodig(dienst):
+    """wv2066: is een stille vangst nodig om de Microsoft-sessie te gebruiken? Alleen voor een ingelogde dienst die aan
+    staat en niet al op 'login nodig' staat (dan probeert elke ronde het al), als de laatste geslaagde vangst én de
+    laatste warm-poging ≥ WARM_UUR geleden zijn (15 min speling, zodat het uurritme van de planner geen uur overslaat)."""
+    if dienst not in I.WARM_DIENSTEN or I.WARM_UUR <= 0 or not I.DIENST_AAN[dienst]:
+        return False
+    s = stand()[dienst]
+    if s.get("modus") == "uit" or not s.get("ingelogd_sinds") or s.get("login_nodig"):
+        return False
+    grens = I.WARM_UUR * 3600 - 15 * 60
+    nu = datetime.now(timezone.utc)
+    # de laatste geslaagde vangst (elke reden) én de laatste warm-poging (ook mislukt: niet elk uur opnieuw proberen)
+    return all(t is None or (nu - t).total_seconds() >= grens
+               for t in (vangst.laatste_ok_vangst(dienst), vangst.laatste_vangst(dienst, "warm")))
+
+
+def _vang_stil(dienst, reden):
+    """Eén stille vangst onder het browserslot. Geeft (code, uitslag) of None als de browser bezet bleef."""
+    if not vangst.browser_slot.acquire(timeout=600):
+        return None
+    try:
+        code, uitslag = vangst.draai_vanger(dienst, "stil", 300, reden=reden)
+        vangst.wis_berichtcache(dienst)
+    finally:
+        vangst.browser_slot.release()
+    return code, uitslag
+
+
+def _na_warm_ok(dienst, s, uitslag):
+    velden = {"geldig_tot": uitslag.get("geldig_tot"), "vernieuw_fouten": 0}
+    if s.get("vooraankondiging"):
+        # ontwerp § 7: lukt stil vernieuwen na de vooraankondiging gewoon, dan schuift de datum mee
+        velden.update(ingelogd_sinds=nu_iso(), vooraankondiging=None)
+    zet(dienst, **velden)
+
+
+def _warm_vangst(dienst):
+    """wv2066: stille vangst met reden 'warm'. Het token is nog geldig, dus mislukken is alleen een meting (vangstlog),
+    geen login-alarm; de eerstvolgende ronde met een bijna verlopen token vernieuwt en alarmeert zoals altijd."""
+    r = _vang_stil(dienst, "warm")
+    if r is None:
+        log("warm_overgeslagen", dienst=dienst, code="BROWSER_BEZET")
+        return None
+    code, uitslag = r
+    if code == 0 and uitslag.get("ok"):
+        _na_warm_ok(dienst, stand()[dienst], uitslag)
+    log("warm", dienst=dienst, code=str(uitslag.get("code") or "-"), stap=uitslag.get("scherm", "-"))
+    return uitslag
+
+
+def houd_warm(dienst):
+    """wv2066: buiten de ronde-uren alleen de warm-vangst, zonder ronde."""
+    if not warm_nodig(dienst) or _lezer(dienst).vernieuw_nodig():
+        return None   # token (bijna) op: dat is werk voor de ronde, met alarm
+    _bezig["dienst"] = dienst
+    try:
+        return _warm_vangst(dienst)
+    except Exception as e:
+        log("warm_fout", dienst=dienst, code=type(e).__name__)
+        return None
+    finally:
+        _bezig["dienst"] = None
+
+
 def draai(dienst, handmatig=False):
     """Eén ronde voor `dienst`, inclusief stil vernieuwen. Schrijft de uitkomst in de stand."""
     s = stand()[dienst]
@@ -134,21 +201,19 @@ def draai(dienst, handmatig=False):
     t0 = time.time()
     try:
         lezer = _lezer(dienst)
-        if dienst in ("outlook", "teams") and lezer.vernieuw_nodig():
-            if not vangst.browser_slot.acquire(timeout=600):
+        vernieuw = dienst in ("outlook", "teams") and lezer.vernieuw_nodig()
+        # wv2066: ook een stille vangst als de vorige geslaagde ≥ WARM_UUR geleden is (token nog geldig)
+        warm = not vernieuw and warm_nodig(dienst)
+        if warm:
+            _warm_vangst(dienst)   # mislukt = alleen meting; het token is nog geldig, dus de ronde gaat gewoon door
+        if vernieuw:
+            r = _vang_stil(dienst, "vernieuw")
+            if r is None:
                 zet(dienst, laatste_fout={"tijd": nu_iso(), "code": "BROWSER_BEZET"})
                 return None
-            try:
-                code, uitslag = vangst.draai_vanger(dienst, "stil", 300)
-                vangst.wis_berichtcache(dienst)
-            finally:
-                vangst.browser_slot.release()
+            code, uitslag = r
             if code == 0 and uitslag.get("ok"):
-                velden = {"geldig_tot": uitslag.get("geldig_tot"), "vernieuw_fouten": 0}
-                if s.get("vooraankondiging"):
-                    # ontwerp § 7: lukt stil vernieuwen na de vooraankondiging gewoon, dan schuift de datum mee
-                    velden.update(ingelogd_sinds=nu_iso(), vooraankondiging=None)
-                zet(dienst, **velden)
+                _na_warm_ok(dienst, s, uitslag)
             elif code == 4:
                 login_nodig(dienst)
                 # wv1950: inlogscherm of MCAS-melding? (alleen de soort, nooit de url); wv1958: + vangercode, audiences, meting
@@ -221,6 +286,13 @@ def _gepland(dienst, nu, laatst):
     return laatst.get(dienst) != slot
 
 
+def _warm_gepland(dienst, nu, laatst):
+    """wv2066: buiten de ronde-uren elk uur (zelfde minuut) kijken of een warm-vangst nodig is."""
+    if dienst not in I.WARM_DIENSTEN or I.WARM_UUR <= 0 or nu.hour in I.UREN[dienst] or nu.minute < I.MINUUT[dienst]:
+        return False
+    return laatst.get("warm-" + dienst) != nu.strftime("%Y-%m-%dT%H")
+
+
 def lus(stop):
     laatst = staat.lees("planner")
     while not stop.is_set():
@@ -234,7 +306,12 @@ def lus(stop):
                     if not handmatig:
                         laatst[d] = nu.strftime("%Y-%m-%dT%H")
                         staat.schrijf("planner", laatst)
-                    draai(d, handmatig=handmatig)
+                    if draai(d, handmatig=handmatig) is None and not handmatig:
+                        houd_warm(d)   # wv2066: geen ronde (bv. proef), wel de sessie gebruiken
+                elif _warm_gepland(d, nu, laatst):
+                    laatst["warm-" + d] = nu.strftime("%Y-%m-%dT%H")
+                    staat.schrijf("planner", laatst)
+                    houd_warm(d)
             if nu.minute == 0:
                 _vooraankondiging()
         except Exception as e:

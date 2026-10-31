@@ -51,6 +51,11 @@ def stand_openbaar():
             "laatste_ronde": {k: v for k, v in lr.items() if isinstance(v, (int, float)) or k in ("tijd", "status", "modus", "code", "ids", "herinlog")},
             "laatste_met_berichten": x.get("laatste_met_berichten"), "laatste_fout": x.get("laatste_fout"),
         }
+        if d in I.WARM_DIENSTEN:
+            # wv2066: vangstlog (tijd, reden, uitkomst, scherm, uren sinds de zichtbare inlog, Microsoft-inlogtelling)
+            v = staat.lees("vangsten").get(d) or {}
+            uit["diensten"][d]["vangsten"] = {"warm_uur": I.WARM_UUR, "interactief": v.get("interactief"),
+                                              "laatste_ok": v.get("laatste_ok"), "reeks": (v.get("reeks") or [])[-6:]}
         if d == "parro":
             # wv1911: sessiemeting (namen, tijden, statussen, korte hashes) van de laatste 4 inlog-/rondemomenten
             uit["diensten"][d]["sessie"] = (staat.lees("parro_sessie").get("reeks") or [])[-4:]

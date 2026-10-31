@@ -10,7 +10,9 @@ sleutels draaien). Ontwerp: vault `01_Ontwikkeling/Meeleespod - Outlook, Teams e
   blokgroottes en webhooks als de pc-scripts (`Socev/socev-pc` 30524ca), met `script_versie = pod-<commit>`.
   Het patiëntfilter blijft in n8n (Qwen): de pod stuurt wat de pc stuurde, naar dezelfde plek.
 - **Vangst** (`vanger/`): alleen de inlogfunctie van de twee pakketten (zie `vendor/BRON.md`), zichtbaar op een virtueel
-  scherm (Xvfb). Stil vernieuwen als een token < 20 min geldig is; lukt dat niet: alarm `[dienst/login]`.
+  scherm (Xvfb). Stil vernieuwen als een token < 20 min geldig is; lukt dat niet: alarm `[dienst/login]`. Outlook en
+  Teams worden daarnaast **warm gehouden** (wv2066): een stille vangst zodra de vorige geslaagde ≥ 3 u oud is, ook 's nachts
+  (zie *Warm houden en vangstlog* onderaan).
 - **Planner**: Outlook en Teams elk uur 07–23 en 03:00, Parro elke 2 uur 07–21; één browser tegelijk.
 - **Modus per dienst**: Outlook en Teams beginnen in `proef` (dry_run: n8n classificeert, bewaart niets; ontwerp § 8.1),
   Parro begint `live` met **zaaien** (alles van vóór 25-10 15:17, de laatste pc-ronde, geldt als verstuurd; § 8.2).
@@ -280,3 +282,37 @@ en sloot met `ONVOLLEDIG` (geen chatsvcagg/ic3). De geslaagde inlog van 27-10 wa
   sinds 13:30Z op `live` (eerste ronde 161 verstuurd, 119 zakelijk). `CHATS_FOUT_RE` is NIET getoetst: er verscheen geen
   chatfoutmelding (`chats_fout` 0/0). Elke ronde sinds 27-10 telt 4 chatfouten op 49 chats; de soort staat alleen in de
   podlog (`teams_chat_fout`, code/http), niet in `stand` — die chats komen niet binnen.
+
+## Warm houden en vangstlog (wv2066, 31-10-2026)
+**Aanleiding.** Outlook bleef ± 24–36 u ingelogd: inlog 29-10 11:13Z, stil vernieuwd 22:24Z, daarna pas weer een stille
+poging rond `geldig_tot` (30-10 23:50Z) → `LOGIN_NODIG` op `MS_INLOG`. Stil vernieuwen gebeurde alleen bij een token
+< 20 min (`VERNIEUW_ONDER_S`); het token leeft ± 25 u, dus de browser (en de Microsoft-inlogsessie) kwam maar ± 1x per dag
+langs. De beheerder van Huisartsen Eemland verlengt de inlogtermijn niet (David 31-10). Twee verklaringen: (a) een vaste
+termijn van de tenant (aanmeldfrequentie, MCAS-sessie) → vaker langskomen helpt niet; (b) inactiviteit → helpt wel.
+- **Warm houden** (`planner.warm_nodig`, `houd_warm`): Outlook en Teams krijgen een stille vangst (reden `warm`) als de
+  laatste geslaagde vangst én de laatste warm-poging ≥ `MEELEES_WARM_UUR` (standaard 3; 0 = uit; 15 min speling)
+  geleden zijn. In de ronde-uren vóór de ronde; daarbuiten (nacht) en bij een dienst in `proef` alleen de vangst, zonder
+  ronde. Niet bij `login_nodig` (dan probeert elke ronde het al) en niet als het token bijna op is (dat blijft het
+  gewone vernieuwen, met alarm). **Een mislukte warm-vangst is alleen een meting**: geen login-alarm, het token is nog
+  geldig en de ronde leest gewoon door. Gelukt = nieuw token en `geldig_tot` (zoals stil vernieuwen). Parro niet.
+- **Vangstlog** (`vangst.bewaar_vangst`, `/staat/vangsten.json`, laatste 12 per dienst; `/api/stand` →
+  `diensten.<outlook|teams>.vangsten` = `warm_uur`, `interactief`, `laatste_ok`, laatste 6): per vangst `tijd`, `reden`
+  (`vernieuw` | `warm` | `knop` = stil na de inlogknop | `zichtbaar`), `code`, `ok`, `scherm`, `uur_sinds_inlog` (sinds de
+  laatste geslaagde **zichtbare** inlog; `ingelogd_sinds` springt ook bij een stille vangst na de knop) en `ms`.
+- **`ms`** (`vanger.ts` msTel, alleen soorten en aantallen): verzoeken van de browser aan de Microsoft-inlog (hostklasse
+  `MS_INLOG`): `authorize` (sessiecookie), `token` (vernieuwtoken), `overig`, `fout`; `fouten` per foutnaam uit
+  `MS_FOUTNAMEN` en `aadsts` (≤ 8 nummers). Gelezen wordt alleen de Location van een redirect (op `error=` en `AADSTS…`)
+  en de tekst van een 4xx/5xx van het token-eindpunt; nooit een geslaagd antwoord, url, code of token.
+- **Lezen** (nacontrole ± 40 u na Davids eerstvolgende inlog): houdt de sessie > 36 u met warm-vangsten → (b), het helpt.
+  Valt hij weer op ± 24–36 u na de inlog, kijk dan naar de eerste mislukte vangst: `aadsts` 70044/70043 (of
+  `interaction_required` na ok-vangsten) = aanmeldfrequentie van de tenant (a), dagelijks inloggen blijft nodig;
+  50058/`login_required` = geen sessiecookie meer; 700084 = SPA-vernieuwtoken met vaste levensduur van 1 dag. `ms`
+  met `authorize` 0 en `token` 0 in de warm-vangsten = de vangst raakte de inlogsessie niet (de app gebruikte zijn
+  bewaarde token), dan zegt het uitblijven van effect niets over (b).
+- **Gemeten vóór de bouw** (stand 31-10 08:05Z): Teams faalt anders dan Outlook: stille vangsten 30-10 22:16Z t/m
+  31-10 07:16Z `LOGIN_NODIG` op scherm `APP` (geen `MS_INLOG`-navigatie, MSAL-toegangstokens voor chatsvcagg/ic3 nog
+  geldig in localStorage) → bij Teams valt niet het inlogscherm maar de vangst zelf om; `ms` laat zien of Teams
+  daarbij nog naar de inlog gaat.
+- **Toetsen**: `tests/test_warm.py` (warm_nodig, geen alarm bij mislukte warm-vangst, nacht zonder ronde, vangstlog,
+  witte lijsten gelijk in TS en Python) en `ci/ms_inlog_toets.cjs` (echte Chromium, nagemaakte authorize-/token-antwoorden,
+  verzonnen codes; ook in de rooktest). In de andere toetsen staat warm houden uit (`tests/conftest.py`).

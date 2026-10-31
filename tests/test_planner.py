@@ -46,7 +46,7 @@ def test_proef_draait_niet_vanzelf(monkeypatch):
 
 
 def test_klik_met_geldige_sessie_opent_geen_venster(monkeypatch):
-    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t: (0, {"ok": True, "code": "OK", "geldig_tot": None}))
+    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t, **k: (0, {"ok": True, "code": "OK", "geldig_tot": None}))
     monkeypatch.setattr(vangst, "wis_berichtcache", lambda d: None)
     klaar = []
     uit = vangst.start_inlogvenster("outlook", lambda d, c, u: klaar.append(c))

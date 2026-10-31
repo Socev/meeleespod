@@ -62,6 +62,14 @@ EERSTE_VENSTER_DAGEN = int(os.environ.get("MEELEES_EERSTE_VENSTER_DAGEN", "7"))
 PARRO_ZAAI_TOT = os.environ.get("MEELEES_PARRO_ZAAI_TOT", "2026-10-25T15:17:00+01:00")
 
 VERNIEUW_ONDER_S = 20 * 60          # token korter dan 20 min geldig: stil vernieuwen
+# wv2066 (David 31-10-2026: "kun je niet vaker rondklikken om hem live te houden?"): Outlook en Teams krijgen ook een
+# stille vangst als de laatste geslaagde vangst minstens zo lang geleden is, ook 's nachts (dan zonder ronde). 0 = uit.
+# Het token leeft ± 25 u, dus zonder dit kwam de browser (en de Microsoft-inlogsessie) maar ± 1x per dag langs.
+try:
+    WARM_UUR = max(0.0, float(os.environ.get("MEELEES_WARM_UUR", "3") or 0))
+except ValueError:
+    WARM_UUR = 3.0
+WARM_DIENSTEN = ("outlook", "teams")
 INLOGVENSTER_MAX_S = 10 * 60        # zichtbaar venster sluit uiterlijk na 10 min
 VNC_CODE_GELDIG_S = 120             # eenmalige code: binnen 2 min gebruiken, één verbinding
 RONDE_REM_S = 10 * 60               # /api/ronde: 1x per 10 min per dienst

@@ -81,13 +81,13 @@ def test_laatste_fout_draagt_subcode(monkeypatch):
     monkeypatch.setattr(outlook, "vernieuw_nodig", lambda: True)
     monkeypatch.setattr(webhook, "alarm", lambda *a, **k: True)
     monkeypatch.setattr(vangst, "wis_berichtcache", lambda d: None)
-    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t: (5, {"ok": False, "code": "BROWSERSTART",
+    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t, **k: (5, {"ok": False, "code": "BROWSERSTART",
                                                                       "sub": "SLOT_IN_GEBRUIK", "gestart": False}))
     assert planner.draai("outlook")["status"] == "vernieuw_fout"
     f = planner.stand()["outlook"]["laatste_fout"]
     assert f["code"] == "BROWSERSTART" and f["sub"] == "SLOT_IN_GEBRUIK" and f["gestart"] is False
     # een onbekende subcode komt nooit in de stand
-    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t: (5, {"ok": False, "code": "BROWSERSTART",
+    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t, **k: (5, {"ok": False, "code": "BROWSERSTART",
                                                                       "sub": "/geheim/vrije tekst"}))
     planner.draai("outlook")
     assert "sub" not in planner.stand()["outlook"]["laatste_fout"]
@@ -161,7 +161,7 @@ def test_login_nodig_bewaart_scherm(monkeypatch):
     monkeypatch.setattr(outlook, "vernieuw_nodig", lambda: True)
     monkeypatch.setattr(webhook, "alarm", lambda *a, **k: True)
     monkeypatch.setattr(vangst, "wis_berichtcache", lambda d: None)
-    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t: (4, {"ok": False, "code": "LOGIN_NODIG", "scherm": "MS_INLOG"}))
+    monkeypatch.setattr(vangst, "draai_vanger", lambda d, m, t, **k: (4, {"ok": False, "code": "LOGIN_NODIG", "scherm": "MS_INLOG"}))
     assert planner.draai("outlook")["status"] == "login_nodig"
     f = planner.stand()["outlook"]["laatste_fout"]
     assert f["code"] == "LOGIN_NODIG" and f["scherm"] == "MS_INLOG" and planner.stand()["outlook"]["login_nodig"]

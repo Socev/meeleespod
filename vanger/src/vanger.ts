@@ -212,6 +212,87 @@ function volgNavigatie(p: { on: (e: string, f: (fr: unknown) => void) => void; m
   });
 }
 
+// ---- Microsoft-inlogtelling (wv2066) ---------------------------------------------------------------------------------
+// David 31-10-2026: Outlook viel ± 36 u na de inlog uit; vaker stil vangen moet laten zien of dat een vaste termijn van
+// de tenant is of inactiviteit. Daarvoor telt de vanger per vangst de verzoeken van de browser aan de Microsoft-inlog
+// (hostklasse MS_INLOG): authorize (sessiecookie), token (vernieuwtoken), overig, en hoeveel daarvan faalden. Van een
+// foutantwoord alleen de foutnaam uit MS_FOUTNAMEN en de AADSTS-nummers (bv. 70044 = aanmeldfrequentie). Nooit een url,
+// header, code of token: van een geslaagd antwoord wordt niets gelezen, van een redirect alleen de Location op die twee
+// patronen, en een antwoordtekst alleen bij status >= 400 van het token-eindpunt (een foutantwoord draagt geen token).
+// Lijst gelijk aan meeleespod/vangst.py (MS_FOUTNAMEN); tests/test_warm.py houdt ze gelijk.
+const MS_FOUTNAMEN = ['login_required', 'interaction_required', 'consent_required', 'invalid_grant', 'invalid_request',
+  'temporarily_unavailable', 'server_error'] as const;
+const msTel = { authorize: 0, token: 0, overig: 0, fout: 0, fouten: {} as Record<string, number>, aadsts: [] as number[] };
+
+function msEindpunt(url: string): 'authorize' | 'token' | 'overig' | null {
+  if (hostKlasse(url) !== 'MS_INLOG') return null;
+  let p: string;
+  try {
+    p = new URL(url).pathname.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (/\/oauth2\/(v2\.0\/)?authorize$/.test(p)) return 'authorize';
+  if (/\/oauth2\/(v2\.0\/)?token$/.test(p)) return 'token';
+  return 'overig';
+}
+
+// Alleen de foutnaam (lijst) en AADSTS-nummers uit een stuk tekst; de tekst zelf verlaat deze functie niet.
+function msFoutUit(tekst: string): { naam: string | null; nummers: number[] } {
+  let naam: string | null = null;
+  const m = /(?:^|[?#&"\s,{])error(?:"\s*:\s*"|=)([a-z_]{1,40})/.exec(tekst);
+  if (m) naam = (MS_FOUTNAMEN as readonly string[]).includes(m[1]) ? m[1] : 'ANDERS';
+  const nummers: number[] = [];
+  for (const x of tekst.matchAll(/AADSTS(\d{5,7})/g)) {
+    const n = Number(x[1]);
+    if (!nummers.includes(n)) nummers.push(n);
+  }
+  return { naam, nummers };
+}
+
+function msNoteer(f: { naam: string | null; nummers: number[] }): void {
+  if (!f.naam && !f.nummers.length) return;
+  msTel.fout++;
+  if (f.naam) tel(msTel.fouten, f.naam);
+  for (const n of f.nummers) if (!msTel.aadsts.includes(n) && msTel.aadsts.length < 8) msTel.aadsts.push(n);
+}
+
+type MsVerzoek = { url: () => string };
+type MsAntwoord = { url: () => string; status: () => number; headers: () => Record<string, string>; text: () => Promise<string> };
+
+function volgMsInlog(ctx: { on: (e: string, f: (x: never) => void) => void }): void {
+  ctx.on('request', (r: MsVerzoek) => {
+    try {
+      const soort = msEindpunt(r.url());
+      if (soort) msTel[soort]++;
+    } catch {
+      /* best effort */
+    }
+  });
+  ctx.on('response', (a: MsAntwoord) => {
+    void (async () => {
+      try {
+        const soort = msEindpunt(a.url());
+        if (!soort) return;
+        const st = a.status();
+        if (st >= 300 && st < 400) {
+          // prompt=none mislukt: redirect naar de app met error=… in query of fragment
+          msNoteer(msFoutUit(a.headers()['location'] || ''));
+        } else if (st >= 400) {
+          if (soort === 'token') {
+            const f = msFoutUit((await a.text()).slice(0, 20000));
+            msNoteer(f.naam || f.nummers.length ? f : { naam: 'ANDERS', nummers: [] });
+          } else {
+            msNoteer({ naam: 'ANDERS', nummers: [] });
+          }
+        }
+      } catch {
+        /* antwoord al weg of geen tekst: niet tellen */
+      }
+    })();
+  });
+}
+
 // Teams: alleen deze audiences gaan naar de lezer (ontwerp § 4: "alleen de audiences die nodig zijn").
 const TEAMS_AUD: Record<string, string> = {
   chatsvcagg: 'https://chatsvcagg.teams.microsoft.com',
@@ -221,6 +302,7 @@ const TEAMS_AUD: Record<string, string> = {
 const GRAPH_AUD = 'https://graph.microsoft.com';
 
 function klaar(uitslag: Record<string, unknown>, code: number): never {
+  if (browserGestart) uitslag.ms = msTel; // wv2066: Microsoft-inlogtelling bij elke uitslag
   process.stdout.write(JSON.stringify(uitslag) + '\n');
   process.exit(code);
 }
@@ -334,6 +416,7 @@ function zetBeleid(modus: Modus, dienst: Dienst): void {
     const ctx = await origineel(map, o);
     browserGestart = true;
     laatsteCtx = ctx;
+    volgMsInlog(ctx);
     if (dienst === 'outlook') {
       for (const p of ctx.pages()) klikMcasMelding(p);
       ctx.on('page', klikMcasMelding);
@@ -510,4 +593,4 @@ async function hoofd(): Promise<void> {
 // Alleen als programma starten; de toets (ci/teams_meting_toets.cjs) laadt de meetfuncties los.
 if (require.main === module) void hoofd();
 const eindSchermVoorToets = (): string | null => eindScherm;
-export { hostKlasse, paginaMeting, CHATS_FOUT_RE, MSAL_NAMEN, HOST_KLASSEN, zetBeleid, diag, eindSchermVoorToets };
+export { hostKlasse, paginaMeting, CHATS_FOUT_RE, MSAL_NAMEN, HOST_KLASSEN, zetBeleid, diag, eindSchermVoorToets, msEindpunt, msFoutUit, msNoteer, msTel, MS_FOUTNAMEN };

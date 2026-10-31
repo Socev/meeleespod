@@ -42,6 +42,9 @@ if grep -q '"code":"GEBRUIK"' /tmp/vanger.uit && grep -q '^exit=1$' /tmp/vanger.
 # wv1958: Teams-meting en popup-sluiter in de vanger, tegen nagemaakte pagina's (alles onderschept, verzonnen tokens)
 docker exec -i -e HOME=/tmp/thuis-teamsmeting meelees-rook node - /app/vanger/dist/vanger/src/vanger.js < "$(dirname "$0")/teams_meting_toets.cjs" | tee /tmp/teamsmeting.uit
 grep -q '^teams_meting_toets: ok$' /tmp/teamsmeting.uit || { echo "::error::teams_meting_toets niet geslaagd"; exit 1; }
+# wv2066: Microsoft-inlogtelling (authorize/token, foutnaam, AADSTS) tegen nagemaakte antwoorden, verzonnen codes en tokens
+docker exec -i -e HOME=/tmp/thuis-msinlog meelees-rook node - /app/vanger/dist/vanger/src/vanger.js < "$(dirname "$0")/ms_inlog_toets.cjs" | tee /tmp/msinlog.uit
+grep -q '^ms_inlog_toets: ok$' /tmp/msinlog.uit || { echo "::error::ms_inlog_toets niet geslaagd"; exit 1; }
 docker exec meelees-rook node -e "require('/app/vanger/dist/vendor/outlook-access/src/auth/browser-capture.js'); require('/app/vanger/dist/vendor/teams-access/src/auth/browser-capture.js'); console.log('  OK    vangmodules laden (playwright gevonden)')"
 D=$(mktemp -d); docker cp meelees-rook:/app/vanger/dist "$D/dist"; docker cp meelees-rook:/app/meeleespod "$D/py"
 bash "$(dirname "$0")/bundel_grep.sh" "$D/dist" "$D/py"

@@ -140,6 +140,25 @@ def schoon_diag(d):
     return uit
 
 
+# wv2066: verzoeken van de browser aan de Microsoft-inlog (login.microsoftonline.com e.d.) per vangst, alleen soorten,
+# aantallen, foutnamen uit deze lijst en AADSTS-nummers (vanger.ts msTel). Zo is te zien of een vangst de inlogsessie
+# echt gebruikte en waarom Microsoft weigerde (bv. 70044/70043 = aanmeldfrequentie, 50058 = geen sessie, 700084 = SPA-token 1 dag).
+MS_SOORTEN = ("authorize", "token", "overig", "fout")
+MS_FOUTNAMEN = ("login_required", "interaction_required", "consent_required", "invalid_grant", "invalid_request",
+                "temporarily_unavailable", "server_error", "ANDERS")
+
+
+def schoon_ms(d):
+    if not isinstance(d, dict):
+        return None
+    uit = {k: _getal(d.get(k)) for k in MS_SOORTEN}
+    f = d.get("fouten") if isinstance(d.get("fouten"), dict) else {}
+    uit["fouten"] = {n: _getal(f[n]) for n in MS_FOUTNAMEN if n in f and _getal(f[n])}
+    a = d.get("aadsts") if isinstance(d.get("aadsts"), list) else []
+    uit["aadsts"] = sorted({x for x in a if isinstance(x, int) and not isinstance(x, bool) and 10000 <= x < 10**7})[:8]
+    return uit
+
+
 def schoon_audiences(a):
     return {k: bool(a.get(k)) for k in AUD_KORT if k in a} if isinstance(a, dict) else None
 
@@ -219,8 +238,9 @@ def ruim_profielslot(dienst):
     return len(wezen), n
 
 
-def draai_vanger(dienst, modus, timeout_s):
-    """Draait de Node-vanger. Geeft (code, uitslag-dict). uitslag bevat nooit een token."""
+def draai_vanger(dienst, modus, timeout_s, reden=None):
+    """Draait de Node-vanger. Geeft (code, uitslag-dict). uitslag bevat nooit een token.
+    reden (wv2066, alleen voor de vangstlog): vernieuw | warm | knop | zichtbaar; zonder reden = modus."""
     zorg_voor_scherm()
     uitmap = dienstmap(dienst)
     vers_profiel_eenmalig(dienst)
@@ -245,6 +265,7 @@ def draai_vanger(dienst, modus, timeout_s):
         ruim_profielslot(dienst)   # Chromium draait detached: anders blijft hij als wees het profiel vasthouden
         uit, fout = b"", b""
         log("vanger_tijd_op", dienst=dienst, modus=modus)
+        bewaar_vangst(dienst, modus, reden, {"ok": False, "code": "TIJD_OP"})
         return 5, {"ok": False, "code": "TIJD_OP"}
     goed, weg = filter_stderr(fout.decode("utf-8", "replace"))
     uitslag = {}
@@ -255,7 +276,11 @@ def draai_vanger(dienst, modus, timeout_s):
         except ValueError:
             continue
     uitslag = {k: uitslag[k] for k in ("ok", "code", "geldig_tot", "audiences", "graph_mail_read", "sub", "gestart",
-                                       "scherm", "mcas", "diag") if k in uitslag}
+                                       "scherm", "mcas", "diag", "ms") if k in uitslag}
+    if "ms" in uitslag:
+        uitslag["ms"] = schoon_ms(uitslag["ms"])
+        if uitslag["ms"] is None:
+            uitslag.pop("ms")
     if "audiences" in uitslag:
         uitslag["audiences"] = schoon_audiences(uitslag["audiences"]) or {}
     if "diag" in uitslag:
@@ -276,12 +301,69 @@ def draai_vanger(dienst, modus, timeout_s):
         uitslag["sub"] = "ANDERS"
     if "gestart" in uitslag:
         uitslag["gestart"] = bool(uitslag["gestart"])
-    log("vanger", dienst=dienst, modus=modus, exit=proc.returncode, code=str(uitslag.get("code", "-")),
+    log("vanger", dienst=dienst, modus=modus, reden=reden or modus, exit=proc.returncode, code=str(uitslag.get("code", "-")),
         soort=uitslag.get("sub", "-"), stap=uitslag.get("scherm", "-"), poging=uitslag.get("mcas", 0), overig=weg,
         status=(goed[-1] if goed else "-"))
     if dienst == "teams":
         bewaar_teams_meting(modus, uitslag)
+    bewaar_vangst(dienst, modus, reden, uitslag)
     return proc.returncode, uitslag
+
+
+VANGST_REEKS = 12
+
+
+def bewaar_vangst(dienst, modus, reden, uitslag):
+    """wv2066: elke Outlook-/Teams-vangst in /staat/vangsten.json (laatste 12 per dienst), voor /api/stand →
+    diensten.<d>.vangsten. Alleen tijd, reden, uitkomst, scherm, uren sinds de laatste zichtbare (interactieve) inlog en
+    de Microsoft-inlogtelling. Daarmee is na een uitval te zien of de grens een vaste termijn na de inlog is of
+    inactiviteit (vaker langskomen helpt dan wel)."""
+    try:
+        nu = datetime.now(timezone.utc)
+        ok = bool(uitslag.get("ok"))
+        reden = reden if reden in ("vernieuw", "warm", "knop", "zichtbaar") else modus
+
+        def f(d):
+            x = d.setdefault(dienst, {})
+            if ok and modus == "zichtbaar":
+                x["interactief"] = nu.isoformat()
+            sinds = None
+            try:
+                if x.get("interactief"):
+                    sinds = round((nu - datetime.fromisoformat(x["interactief"])).total_seconds() / 3600, 1)
+            except ValueError:
+                pass
+            m = {"tijd": nu.isoformat(), "reden": reden, "code": str(uitslag.get("code") or ("OK" if ok else "FOUT"))[:32],
+                 "ok": ok, "uur_sinds_inlog": sinds}
+            for k in ("scherm", "ms"):
+                if k in uitslag:
+                    m[k] = uitslag[k]
+            if ok:
+                x["laatste_ok"] = m["tijd"]
+            x["reeks"] = (x.get("reeks") or [])[-(VANGST_REEKS - 1):] + [m]
+        staat.werk_bij("vangsten", f)
+    except Exception as e:   # meten mag een vangst nooit breken
+        log("vangstlog_fout", dienst=dienst, code=type(e).__name__)
+
+
+def _als_tijd(t):
+    try:
+        return datetime.fromisoformat(t) if t else None
+    except (ValueError, TypeError):
+        return None
+
+
+def laatste_ok_vangst(dienst):
+    """Tijd (datetime, UTC) van de laatste geslaagde vangst van `dienst`, of None."""
+    return _als_tijd((staat.lees("vangsten").get(dienst) or {}).get("laatste_ok"))
+
+
+def laatste_vangst(dienst, reden):
+    """Tijd van de laatste vangst van `dienst` met deze reden (geslaagd of niet), of None."""
+    for m in reversed((staat.lees("vangsten").get(dienst) or {}).get("reeks") or []):
+        if isinstance(m, dict) and m.get("reden") == reden:
+            return _als_tijd(m.get("tijd"))
+    return None
 
 
 def bewaar_teams_meting(modus, uitslag):
@@ -418,7 +500,7 @@ def start_inlogvenster(dienst, na_vangst):
                 from . import parro
                 code_, uitslag = parro.inloggen_stil()
             else:
-                code_, uitslag = draai_vanger(dienst, "stil", 300)
+                code_, uitslag = draai_vanger(dienst, "stil", 300, reden="knop")
             wis_berichtcache(dienst)
             if code_ == 0 and uitslag.get("ok"):
                 fase("klaar")
@@ -451,7 +533,7 @@ def start_inlogvenster(dienst, na_vangst):
                 from . import parro
                 code_, uitslag = parro.inloggen_zichtbaar(I.INLOGVENSTER_MAX_S)
             else:
-                code_, uitslag = draai_vanger(dienst, "zichtbaar", I.INLOGVENSTER_MAX_S + 30)
+                code_, uitslag = draai_vanger(dienst, "zichtbaar", I.INLOGVENSTER_MAX_S + 30, reden="zichtbaar")
             bewaker.cancel()
             wis_berichtcache(dienst)
             fase("klaar" if code_ == 0 and uitslag.get("ok") else "mislukt")
